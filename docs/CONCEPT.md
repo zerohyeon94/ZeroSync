@@ -66,10 +66,11 @@
 ## 3. 시스템 아키텍처
 
 ### 플랫폼
-- **형태:** macOS 메뉴바 상주 앱
-- **프레임워크:** Electron + Vite + React + TypeScript
-- **AI 엔진:** Claude API (claude-sonnet-4-6)
-- **패키징:** electron-builder (.dmg / .app)
+- **형태:** macOS 네이티브 메뉴바 앱
+- **프레임워크:** Swift + SwiftUI (macOS 14+)
+- **AI 엔진:** Claude API (claude-sonnet-4-6) — URLSession 기반 HTTP 클라이언트
+- **저장:** SwiftData (로컬 대화 히스토리)
+- **패키징:** Xcode Archive → notarized .dmg
 
 ### 핵심 기능
 | 기능 | 설명 |
@@ -83,24 +84,22 @@
 
 ### 파일 구조
 ```
-src/
-  main/             # Electron main process
-    index.ts        # 앱 진입점, BrowserWindow 생성
-    tray.ts         # 메뉴바 트레이 설정
-    ipc.ts          # IPC 핸들러 (renderer ↔ main)
-  renderer/         # React 화면
-    App.tsx
-    components/
-      ChatWindow.tsx        # 메인 채팅 인터페이스
-      PersonaSelector.tsx   # 알파 / 베타 전환
-      MessageBubble.tsx     # 메시지 말풍선
-      StatusBar.tsx         # 현재 활성 페르소나 표시
-    lib/
-      alpha-client.ts       # 알파 Claude API 클라이언트
-      beta-client.ts        # 베타 Claude API 클라이언트
-      storage.ts            # 대화 히스토리 로컬 저장
-    styles/
-      globals.css
+ZeroSync/
+  ZeroSyncApp.swift         # @main, MenuBarExtra, WindowGroup
+  AppDelegate.swift         # NSApplicationDelegate
+  Views/
+    MenuBarView.swift       # 메뉴바 팝업 뷰
+    MainView.swift          # 메인 윈도우 (설정)
+    ChatView.swift          # 채팅 인터페이스
+    MessageBubble.swift     # 메시지 말풍선
+    PersonaSelector.swift   # Alpha / Beta 전환
+  Models/
+    Message.swift           # SwiftData 대화 모델
+    Persona.swift           # Alpha/Beta 페르소나 enum
+  Services/
+    ClaudeService.swift     # Claude API URLSession 클라이언트
+    AlphaService.swift      # Alpha 시스템 프롬프트 + API 호출
+    BetaService.swift       # Beta 시스템 프롬프트 + API 호출
 ```
 
 ---
@@ -138,16 +137,16 @@ src/
 - [ ] 대화 히스토리 로컬 저장
 
 ### Phase 2 — 핵심 기능
-- [ ] 음성 입력 (Web Speech API)
-- [ ] macOS 시스템 알림 연동
+- [ ] 음성 입력 (SFSpeechRecognizer — Speech 프레임워크)
+- [ ] macOS 시스템 알림 (UNUserNotificationCenter)
 - [ ] 베타의 일정/태스크 관리 패널
-- [ ] 알파의 코드 블록 렌더링 (highlight.js)
+- [ ] 알파의 코드 블록 렌더링 (AttributedString / SwiftUI Text)
 
 ### Phase 3 — 고도화
 - [ ] Manus 에이전트 연동 (웹 자동화)
-- [ ] 컨텍스트 인식 (현재 작업 화면 캡처)
-- [ ] electron-builder로 .dmg 배포
-- [ ] 자동 업데이트 (electron-updater)
+- [ ] 컨텍스트 인식 (현재 작업 화면 캡처 — ScreenCaptureKit)
+- [ ] Xcode Archive → notarization → .dmg 배포
+- [ ] 자동 업데이트 (Sparkle 프레임워크)
 
 ---
 

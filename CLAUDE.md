@@ -1,6 +1,6 @@
 # Zero-Alpha-Beta
 
-맥 메뉴바 기반 AI 비서 앱 (Electron + React + TypeScript)
+맥 메뉴바 기반 AI 비서 앱 (Swift + SwiftUI)
 
 ## 캐릭터
 - 제로(사용자): ENFJ — 비전 제시
@@ -8,9 +8,10 @@
 - 베타(Beta): ISFJ — 일정 관리/감정 서포트
 
 ## 기술 스택
-- Electron + Vite + React + TypeScript
-- Claude API (claude-sonnet-4-6)
-- electron-builder (macOS 패키징)
+- Swift + SwiftUI (macOS 14+)
+- Claude API (claude-sonnet-4-6) — URLSession 기반
+- SwiftData (로컬 저장)
+- Xcode Archive → notarized .dmg (배포)
 
 ## 규칙
 - 응답: 반드시 한국어

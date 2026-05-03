@@ -34,8 +34,8 @@
 
 ## 기술 스택
 
-- **플랫폼**: Electron 34 + electron-vite
-- **UI**: React 18 + TypeScript
-- **AI**: Claude API (claude-sonnet-4-6) — `@anthropic-ai/sdk`
-- **저장**: electron-store (로컬)
-- **패키징**: electron-builder (.dmg)
+- **플랫폼**: macOS 14+ 네이티브 앱
+- **UI**: Swift + SwiftUI
+- **AI**: Claude API (claude-sonnet-4-6) — URLSession 기반 HTTP 클라이언트
+- **저장**: SwiftData (로컬)
+- **패키징**: Xcode Archive → notarized .dmg
