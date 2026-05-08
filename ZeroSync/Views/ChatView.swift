@@ -8,10 +8,8 @@ final class ChatViewModel {
     var errorMessage: String?
     var selectedPersona: Persona = .alpha
 
-    @ObservationIgnored
-    @AppStorage("apiKey") private var apiKey = ""
-
     func send(currentMessages: [Message], context: ModelContext) async {
+        let apiKey = UserDefaults.standard.string(forKey: "apiKey") ?? ""
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isLoading else { return }
 
@@ -21,6 +19,7 @@ final class ChatViewModel {
 
         let history = currentMessages.map { (role: $0.isUser ? "user" : "assistant", content: $0.content) }
         let fullHistory = history + [(role: "user", content: text)]
+
 
         let userMessage = Message(content: text, isUser: true)
         context.insert(userMessage)
