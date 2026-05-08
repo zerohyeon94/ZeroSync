@@ -66,22 +66,6 @@ struct HomeView: View {
             ZeroLogoView(isThinking: viewModel.isLoading)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            HStack(alignment: .bottom, spacing: 0) {
-                AlphaWolfView(
-                    pose: viewModel.isLoading ? .earPerk : .sitting,
-                    size: CGSize(width: 110, height: 110),
-                    glowing: lastRespondedPersona == .alpha
-                )
-                Spacer()
-                BetaBearView(
-                    pose: viewModel.isLoading ? .standing : .sitting,
-                    size: CGSize(width: 110, height: 110),
-                    glowing: lastRespondedPersona == .beta
-                )
-            }
-            .padding(.horizontal, 32)
-            .padding(.bottom, 8)
-
             if !messages.isEmpty || viewModel.isLoading {
                 ConversationOverlay(
                     messages: Array(messages.suffix(3)),
@@ -89,15 +73,11 @@ struct HomeView: View {
                     alphaBlue: alphaBlue,
                     betaPink: betaPink
                 )
-                .padding(.horizontal, 100)
-                .padding(.bottom, 130)
+                .padding(.horizontal, 28)
+                .padding(.bottom, 24)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var lastRespondedPersona: Persona? {
-        messages.last(where: { !$0.isUser })?.persona
     }
 
     @ViewBuilder
