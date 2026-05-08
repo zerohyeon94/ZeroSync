@@ -6,31 +6,34 @@ final class ChatViewModel {
     var inputText = ""
     var isLoading = false
     var errorMessage: String?
-    var selectedPersona: Persona = .alpha
 
     func send(currentMessages: [Message], context: ModelContext) async {
-        let apiKey = UserDefaults.standard.string(forKey: "apiKey") ?? ""
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isLoading else { return }
 
+        let apiKey = UserDefaults.standard.string(forKey: "apiKey") ?? ""
         inputText = ""
         isLoading = true
         errorMessage = nil
 
-        let history = currentMessages.map { (role: $0.isUser ? "user" : "assistant", content: $0.content) }
+        let history = currentMessages.map {
+            (role: $0.isUser ? "user" : "assistant", content: $0.content)
+        }
         let fullHistory = history + [(role: "user", content: text)]
 
+        let userMsg = Message(content: text, isUser: true)
+        context.insert(userMsg)
 
-        let userMessage = Message(content: text, isUser: true)
-        context.insert(userMessage)
-
+        let service = ClaudeService(apiKey: apiKey)
         do {
-            let service = ClaudeService(apiKey: apiKey)
-            let reply = try await service.send(history: fullHistory, persona: selectedPersona)
-            context.insert(Message(content: reply, isUser: false, persona: selectedPersona))
+            async let alphaTask = service.send(history: fullHistory, persona: .alpha)
+            async let betaTask  = service.send(history: fullHistory, persona: .beta)
+            let (alphaReply, betaReply) = try await (alphaTask, betaTask)
+            context.insert(Message(content: alphaReply, isUser: false, persona: .alpha))
+            context.insert(Message(content: betaReply,  isUser: false, persona: .beta))
         } catch {
             errorMessage = error.localizedDescription
-            context.delete(userMessage)
+            context.delete(userMsg)
         }
 
         isLoading = false
@@ -45,12 +48,6 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            PersonaSelector(selected: $viewModel.selectedPersona)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-
-            Divider()
-
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
@@ -59,10 +56,9 @@ struct ChatView: View {
                                 .id(message.id)
                         }
                         if viewModel.isLoading {
-                            HStack {
-                                ProgressView()
-                                    .scaleEffect(0.7)
-                                Text("응답 중...")
+                            HStack(spacing: 8) {
+                                ProgressView().scaleEffect(0.7)
+                                Text("Alpha · Beta 응답 중...")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -81,9 +77,7 @@ struct ChatView: View {
                     }
                 }
                 .onChange(of: viewModel.isLoading) {
-                    withAnimation {
-                        proxy.scrollTo("loading", anchor: .bottom)
-                    }
+                    withAnimation { proxy.scrollTo("loading", anchor: .bottom) }
                 }
             }
 
@@ -114,10 +108,16 @@ struct ChatView: View {
                 } label: {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.title2)
-                        .foregroundStyle(viewModel.inputText.isEmpty ? Color.secondary : Color.accentColor)
+                        .foregroundStyle(
+                            viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                ? Color.secondary : Color.accentColor
+                        )
                 }
                 .buttonStyle(.plain)
-                .disabled(viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isLoading)
+                .disabled(
+                    viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || viewModel.isLoading
+                )
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)

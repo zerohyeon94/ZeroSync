@@ -4,37 +4,23 @@ struct OrbView: View {
     enum OrbState { case idle, thinking }
 
     let state: OrbState
-    let persona: Persona
 
     private var c: OrbColors {
-        switch (state, persona) {
-        case (.idle, .alpha):
+        switch state {
+        case .idle:
             return OrbColors(
                 core: Color(red: 0, green: 0.4, blue: 1),
                 mid:  Color(red: 0, green: 0.267, blue: 0.8),
                 outer: Color(red: 0, green: 0.1, blue: 0.4),
                 glow: Color(red: 0, green: 0.4, blue: 1)
             )
-        case (.thinking, .alpha):
+        case .thinking:
+            // Alpha(보라)·Beta(골드) 동시 사고 — 보라 계열로 표현
             return OrbColors(
                 core: Color(red: 0.659, green: 0.333, blue: 0.969),
                 mid:  Color(red: 0.486, green: 0.231, blue: 0.929),
                 outer: Color(red: 0.231, green: 0.027, blue: 0.392),
                 glow: Color(red: 0.486, green: 0.231, blue: 0.929)
-            )
-        case (.idle, .beta):
-            return OrbColors(
-                core: Color(red: 1.0, green: 0.549, blue: 0.259),
-                mid:  Color(red: 1.0, green: 0.42, blue: 0.208),
-                outer: Color(red: 0.4, green: 0.133, blue: 0),
-                glow: Color(red: 1.0, green: 0.42, blue: 0.208)
-            )
-        case (.thinking, .beta):
-            return OrbColors(
-                core: Color(red: 1.0, green: 0.761, blue: 0.031),
-                mid:  Color(red: 0.898, green: 0.6, blue: 0.02),
-                outer: Color(red: 0.4, green: 0.259, blue: 0),
-                glow: Color(red: 1.0, green: 0.761, blue: 0.031)
             )
         }
     }

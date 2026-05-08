@@ -8,15 +8,13 @@ struct HomeView: View {
     @State private var viewModel = ChatViewModel()
     @Environment(\.openWindow) private var openWindow
 
-    private var accentCol: Color {
-        viewModel.selectedPersona == .alpha
-            ? Color(red: 0, green: 0.4, blue: 1)
-            : Color(red: 1.0, green: 0.42, blue: 0.208)
-    }
+    private let accentCol = Color(red: 0, green: 0.96, blue: 1)
 
     var body: some View {
         ZStack {
+            // 우주 배경
             Color(red: 0.012, green: 0.024, blue: 0.031).ignoresSafeArea()
+            StarfieldView()
 
             VStack(spacing: 0) {
                 topBar
@@ -35,7 +33,7 @@ struct HomeView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("ZERO-ALPHA-BETA")
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(Color(red: 0, green: 0.96, blue: 1).opacity(0.7))
+                    .foregroundStyle(accentCol.opacity(0.7))
                     .tracking(3)
                 Text("AI ASSISTANT SYSTEM")
                     .font(.system(size: 8, design: .monospaced))
@@ -43,7 +41,6 @@ struct HomeView: View {
                     .tracking(2)
             }
             Spacer()
-            PersonaSelector(selected: $viewModel.selectedPersona)
             Button {
                 openWindow(id: "settings")
                 NSApp.activate(ignoringOtherApps: true)
@@ -64,11 +61,8 @@ struct HomeView: View {
 
     private var orbArea: some View {
         ZStack(alignment: .bottom) {
-            OrbView(
-                state: viewModel.isLoading ? .thinking : .idle,
-                persona: viewModel.selectedPersona
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            OrbView(state: viewModel.isLoading ? .thinking : .idle)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             if !messages.isEmpty || viewModel.isLoading {
                 ConversationOverlay(
@@ -100,7 +94,7 @@ struct HomeView: View {
                 .lineLimit(1...3)
                 .font(.system(size: 13))
                 .foregroundStyle(.white)
-                .tint(Color(red: 0, green: 0.96, blue: 1))
+                .tint(accentCol)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
                 .background(inputBackground)
@@ -115,12 +109,14 @@ struct HomeView: View {
                     .font(.system(size: 28))
                     .foregroundStyle(
                         viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                            ? Color.white.opacity(0.15)
-                            : accentCol
+                            ? Color.white.opacity(0.15) : accentCol
                     )
             }
             .buttonStyle(.plain)
-            .disabled(viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isLoading)
+            .disabled(
+                viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || viewModel.isLoading
+            )
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 14)
@@ -164,8 +160,7 @@ private struct ConversationOverlay: View {
 
     private func fadeOpacity(index: Int, total: Int) -> Double {
         guard total > 1 else { return 1.0 }
-        let distFromEnd = total - 1 - index
-        switch distFromEnd {
+        switch total - 1 - index {
         case 0: return 1.0
         case 1: return 0.55
         default: return 0.22
@@ -181,15 +176,22 @@ private struct HoloBubble: View {
     private var isUser: Bool { message.isUser }
 
     private var accentColor: Color {
-        isUser
-            ? Color(red: 1.0, green: 0.42, blue: 0.208)
-            : Color(red: 0, green: 0.96, blue: 1)
+        if isUser { return Color(red: 1.0, green: 0.42, blue: 0.208) }
+        // Alpha = 파랑, Beta = 앰버로 구분
+        switch message.persona {
+        case .alpha: return Color(red: 0, green: 0.6, blue: 1.0)
+        case .beta:  return Color(red: 1.0, green: 0.65, blue: 0.2)
+        case .none:  return Color(red: 0, green: 0.96, blue: 1)
+        }
     }
 
     private var fillColor: Color {
-        isUser
-            ? Color(red: 1.0, green: 0.42, blue: 0.208).opacity(0.08)
-            : Color(red: 0, green: 0.4, blue: 1).opacity(0.08)
+        if isUser { return Color(red: 1.0, green: 0.42, blue: 0.208).opacity(0.08) }
+        switch message.persona {
+        case .alpha: return Color(red: 0, green: 0.4, blue: 1).opacity(0.08)
+        case .beta:  return Color(red: 1.0, green: 0.55, blue: 0.1).opacity(0.08)
+        case .none:  return Color.white.opacity(0.05)
+        }
     }
 
     private var label: String {
@@ -204,7 +206,7 @@ private struct HoloBubble: View {
                 Text(label)
                     .font(.system(size: 8, design: .monospaced))
                     .fontWeight(.semibold)
-                    .foregroundStyle(accentColor.opacity(0.65))
+                    .foregroundStyle(accentColor.opacity(0.75))
                     .tracking(2)
 
                 Text(message.content)
@@ -219,7 +221,7 @@ private struct HoloBubble: View {
                             .fill(fillColor)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .strokeBorder(accentColor.opacity(0.28), lineWidth: 1)
+                                    .strokeBorder(accentColor.opacity(0.3), lineWidth: 1)
                             )
                     )
                     .background(
@@ -266,7 +268,7 @@ private struct HoloTypingIndicator: View {
                     )
             )
 
-            Text("PROCESSING")
+            Text("ALPHA · BETA PROCESSING")
                 .font(.system(size: 8, design: .monospaced))
                 .foregroundStyle(Color(red: 0, green: 0.96, blue: 1).opacity(0.45))
                 .tracking(2)
