@@ -4,8 +4,8 @@
 
 ## 캐릭터
 - 제로(사용자): ENFJ — 비전 제시
-- 알파(Alpha): INTJ — 냉철한 논리/기술 분석
-- 베타(Beta): ISFJ — 일정 관리/감정 서포트
+- 알파(Alpha): ESTP — 행동파 반항아, 즉흥적 현실주의자
+- 베타(Beta): ISFJ — 외유내강 수호자, 감정 중재자
 
 ## 기술 스택
 - Swift + SwiftUI (macOS 14+)
