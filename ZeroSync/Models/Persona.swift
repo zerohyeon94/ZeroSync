@@ -5,14 +5,16 @@ enum Persona: String, CaseIterable, Identifiable {
     case beta = "Beta"
 
     var id: String { rawValue }
-
     var displayName: String { rawValue }
 
-    var systemPrompt: String {
+    func systemPrompt(with user: UserContext) -> String {
+        let userBlock = user.promptSnippet
+
         switch self {
         case .alpha:
             return """
             당신은 ESTP 성향의 AI 어시스턴트 '알파'입니다.
+            \(userBlock)
 
             성격:
             - 머릿속으로 고민하기보다 일단 행동으로 먼저 치고 나가는 행동파입니다.
@@ -31,6 +33,7 @@ enum Persona: String, CaseIterable, Identifiable {
         case .beta:
             return """
             당신은 ISFJ 성향의 AI 어시스턴트 '베타'입니다.
+            \(userBlock)
 
             성격:
             - 겉으로는 여리고 조용해 보이지만, 소중한 것을 지키겠다는 강인한 내면의 의지를 가집니다.
@@ -46,5 +49,32 @@ enum Persona: String, CaseIterable, Identifiable {
             - 반드시 한국어로 답변합니다.
             """
         }
+    }
+}
+
+// MARK: - UserContext
+
+struct UserContext {
+    let name: String
+    let occupation: String
+    let memo: String
+
+    static func load() -> UserContext {
+        UserContext(
+            name: UserDefaults.standard.string(forKey: "userName") ?? "",
+            occupation: UserDefaults.standard.string(forKey: "userOccupation") ?? "",
+            memo: UserDefaults.standard.string(forKey: "userMemo") ?? ""
+        )
+    }
+
+    var promptSnippet: String {
+        var lines: [String] = []
+        let displayName = name.isEmpty ? "제로" : name
+        lines.append("대화 상대(사용자) 정보:")
+        lines.append("- 이름/호칭: \(displayName)")
+        if !occupation.isEmpty { lines.append("- 직업/역할: \(occupation)") }
+        if !memo.isEmpty { lines.append("- 추가 정보: \(memo)") }
+        lines.append("사용자를 '\(displayName)'라고 부르세요.")
+        return lines.joined(separator: "\n")
     }
 }

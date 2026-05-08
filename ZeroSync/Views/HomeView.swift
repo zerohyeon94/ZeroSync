@@ -6,6 +6,7 @@ struct HomeView: View {
     @Query(sort: \Message.timestamp) private var messages: [Message]
 
     @State private var viewModel = ChatViewModel()
+    @Environment(\.openWindow) private var openWindow
 
     private var accentCol: Color {
         viewModel.selectedPersona == .alpha
@@ -43,6 +44,18 @@ struct HomeView: View {
             }
             Spacer()
             PersonaSelector(selected: $viewModel.selectedPersona)
+            Button {
+                openWindow(id: "settings")
+                NSApp.activate(ignoringOtherApps: true)
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 14, weight: .regular))
+                    .foregroundStyle(Color.white.opacity(0.4))
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("설정")
         }
         .padding(.horizontal, 24)
         .padding(.top, 14)

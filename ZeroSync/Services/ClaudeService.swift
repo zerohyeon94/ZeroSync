@@ -17,7 +17,7 @@ struct ClaudeService {
         let requestBody = RequestBody(
             model: Self.model,
             maxTokens: 1024,
-            system: persona.systemPrompt,
+            system: persona.systemPrompt(with: UserContext.load()),
             messages: history.map { APIMessage(role: $0.role, content: $0.content) }
         )
 
