@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Observation
 
 /// 한 시점의 사용자 활동 관측값
 struct ActivitySnapshot: Sendable {
@@ -48,11 +49,76 @@ final class SystemActivitySource: ActivitySource {
         return title as? String
     }
 
-    /// 마지막 키보드·마우스 입력 이후 경과 시간 (권한 불필요, 입력 내용은 수집하지 않음)
+    /// 마지막 하드웨어 키보드·마우스 입력 이후 경과 시간 (권한 불필요, 입력 내용은 수집하지 않음)
     static func idleSeconds() -> TimeInterval {
-        let types: [CGEventType] = [.keyDown, .mouseMoved, .leftMouseDown, .scrollWheel]
-        return types
-            .map { CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: $0) }
-            .min() ?? 0
+        // kCGAnyInputEventType: 모든 입력 이벤트 종류를 포괄하는 특수값 (~0)
+        CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: CGEventType(rawValue: ~0)!)
+    }
+}
+
+/// 분류가 끝난 현재 활동
+struct ClassifiedActivity: Sendable {
+    let appName: String
+    let windowTitle: String?
+    let category: ActivityCategory
+    let isIdle: Bool
+    let date: Date
+}
+
+/// 5초 폴링 + 앱 전환 이벤트로 현재 활동을 갱신한다.
+@MainActor
+@Observable
+final class ActivityMonitor {
+    static let shared = ActivityMonitor(source: SystemActivitySource(),
+                                        classifier: ActivityClassifier(rules: .default))
+    /// 이 시간 이상 입력이 없으면 유휴로 표시 (판정은 바꾸지 않음)
+    static let idleThreshold: TimeInterval = 300
+
+    private(set) var current: ClassifiedActivity?
+
+    private let source: ActivitySource
+    private let classifier: ActivityClassifier
+    private var timer: Timer?
+    private var appSwitchObserver: (any NSObjectProtocol)?
+
+    init(source: ActivitySource, classifier: ActivityClassifier) {
+        self.source = source
+        self.classifier = classifier
+    }
+
+    func start() {
+        guard timer == nil else { return }
+        poll()
+        let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.poll() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+
+        appSwitchObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.poll() }
+        }
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+        if let appSwitchObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(appSwitchObserver)
+            self.appSwitchObserver = nil
+        }
+    }
+
+    func poll() {
+        guard let snap = source.snapshot() else { return }
+        current = ClassifiedActivity(
+            appName: snap.appName,
+            windowTitle: snap.windowTitle,
+            category: classifier.classify(appName: snap.appName, windowTitle: snap.windowTitle),
+            isIdle: snap.idleSeconds >= Self.idleThreshold,
+            date: snap.date
+        )
     }
 }
