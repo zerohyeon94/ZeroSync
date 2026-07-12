@@ -20,7 +20,9 @@ final class StudySessionManager {
         self.monitor = monitor
     }
 
-    /// 앱 시작 시 한 번 호출 — 저장소 연결 + 마지막 세션 복원
+    /// 앱 시작 시 한 번 호출 — 저장소 연결 + 마지막 세션 복원.
+    /// 주의: 호출자는 이 context의 ModelContainer를 매니저 수명 동안 유지해야 한다.
+    /// 컨테이너가 해제되면 insert/save에서 크래시한다 (ZeroSyncApp이 프로퍼티로 보유).
     func configure(context: ModelContext) {
         self.context = context
         loadLastSession()
