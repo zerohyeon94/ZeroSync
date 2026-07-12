@@ -32,4 +32,15 @@ struct ActivityMonitorTests {
         #expect(monitor.current?.category == .productive)
         #expect(monitor.current?.isIdle == true)
     }
+
+    @Test func 스냅샷이_nil이면_이전_활동을_유지() {
+        // 전면 앱 조회가 일시적으로 실패해도 마지막 관측값을 지우지 않는다
+        let source = FakeSource()
+        let monitor = ActivityMonitor(source: source, classifier: ActivityClassifier(rules: .default))
+        source.next = ActivitySnapshot(appName: "Xcode", windowTitle: nil, idleSeconds: 2, date: .now)
+        monitor.poll()
+        source.next = nil
+        monitor.poll()
+        #expect(monitor.current?.appName == "Xcode")
+    }
 }

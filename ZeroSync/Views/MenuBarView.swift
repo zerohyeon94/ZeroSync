@@ -23,6 +23,20 @@ struct MenuBarView: View {
             .padding(.top, 12)
             .padding(.bottom, 8)
 
+            if let activity = ActivityMonitor.shared.current {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(activity.category == .productive ? Color.green :
+                              activity.category == .distraction ? Color.red : Color.gray)
+                        .frame(width: 8, height: 8)
+                    Text("\(activity.appName)\(activity.isIdle ? " (자리 비움)" : "")")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
+            }
+
             Divider()
 
             ChatView()
