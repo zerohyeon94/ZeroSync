@@ -40,4 +40,17 @@ struct StudySessionTests {
         session.endedAt = t0.addingTimeInterval(90)
         #expect(session.totalSeconds == 90)
     }
+
+    @Test func 영_이하의_dt는_무시된다() {
+        let session = StudySession(startedAt: .now)
+        session.accumulate(dt: 0, category: .productive, isIdle: false)
+        session.accumulate(dt: -3, category: .productive, isIdle: false)
+        #expect(session.productiveSeconds == 0)
+    }
+
+    @Test func 전체가_유휴인_세션의_집중율은_0() {
+        let session = StudySession(startedAt: .now)
+        session.accumulate(dt: 3600, category: .neutral, isIdle: true)
+        #expect(session.focusRate == 0)
+    }
 }
