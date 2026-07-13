@@ -7,16 +7,16 @@ struct HomeView: View {
 
     @State private var viewModel = ChatViewModel()
     @Environment(\.openWindow) private var openWindow
+    @AppStorage("appTheme") private var appThemeRaw = AppTheme.light.rawValue
 
     private let alphaBlue = Color(red: 0.294, green: 0.561, blue: 0.831)
     private let betaPink  = Color(red: 0.910, green: 0.482, blue: 0.639)
+    private var appTheme: AppTheme { AppTheme(rawValue: appThemeRaw) ?? .light }
+    private var isDarkTheme: Bool { appTheme == .dark }
 
     var body: some View {
         ZStack {
-            Image("AppBackground")
-                .resizable()
-                .scaledToFill()
-                .ignoresSafeArea()
+            CosmicBackgroundView(isDarkTheme: isDarkTheme)
 
             VStack(spacing: 0) {
                 topBar
@@ -25,7 +25,6 @@ struct HomeView: View {
                 inputBar
             }
         }
-        .preferredColorScheme(.light)
     }
 
     // MARK: - Subviews
@@ -49,7 +48,7 @@ struct HomeView: View {
             } label: {
                 Image(systemName: "gearshape")
                     .font(.system(size: 14, weight: .regular))
-                    .foregroundStyle(Color.primary.opacity(0.35))
+                    .foregroundStyle(Color.primary.opacity(isDarkTheme ? 0.58 : 0.35))
                     .frame(width: 28, height: 28)
                     .contentShape(Rectangle())
             }
@@ -128,18 +127,123 @@ struct HomeView: View {
             Rectangle()
                 .fill(.ultraThinMaterial)
                 .overlay(alignment: .top) {
-                    Rectangle().fill(Color.black.opacity(0.06)).frame(height: 0.5)
+                    Rectangle()
+                        .fill((isDarkTheme ? Color.white : Color.black).opacity(0.08))
+                        .frame(height: 0.5)
                 }
         )
     }
 
     private var inputBackground: some View {
         RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .fill(Color.white.opacity(0.7))
+            .fill(isDarkTheme ? Color.black.opacity(0.34) : Color.white.opacity(0.72))
             .overlay(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(alphaBlue.opacity(0.4), lineWidth: 1)
+                    .strokeBorder(alphaBlue.opacity(isDarkTheme ? 0.58 : 0.4), lineWidth: 1)
             )
+    }
+}
+
+// MARK: - Cosmic Background
+
+private struct CosmicBackgroundView: View {
+    let isDarkTheme: Bool
+
+    var body: some View {
+        ZStack {
+            // 1. 베이스 그래디언트 (낮의 성운 / 밤의 심우주)
+            LinearGradient(
+                colors: isDarkTheme ? darkBaseColors : lightBaseColors,
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            // 2. 배경 이미지 — 옅게 깔아 우주 텍스처 느낌만
+            Image("AppBackground")
+                .resizable()
+                .scaledToFill()
+                .opacity(isDarkTheme ? 0.22 : 0.18)
+                .blendMode(isDarkTheme ? .screen : .softLight)
+
+            // 3. 성운 클라우드들 (시안 → 보라 → 핑크)
+            nebulaCloud(
+                color: isDarkTheme
+                    ? Color(red: 0.20, green: 0.55, blue: 1.00)
+                    : Color(red: 0.46, green: 0.74, blue: 1.00),
+                center: UnitPoint(x: 0.18, y: 0.22),
+                radius: 380,
+                opacity: isDarkTheme ? 0.55 : 0.55
+            )
+
+            nebulaCloud(
+                color: isDarkTheme
+                    ? Color(red: 0.62, green: 0.30, blue: 0.92)
+                    : Color(red: 0.74, green: 0.55, blue: 0.96),
+                center: UnitPoint(x: 0.55, y: 0.50),
+                radius: 460,
+                opacity: isDarkTheme ? 0.50 : 0.48
+            )
+
+            nebulaCloud(
+                color: isDarkTheme
+                    ? Color(red: 0.95, green: 0.35, blue: 0.62)
+                    : Color(red: 1.00, green: 0.62, blue: 0.78),
+                center: UnitPoint(x: 0.82, y: 0.84),
+                radius: 420,
+                opacity: isDarkTheme ? 0.42 : 0.50
+            )
+
+            // 4. 별빛 — 라이트 모드에서도 보이도록 톤 조정
+            StarfieldView()
+                .opacity(isDarkTheme ? 0.95 : 0.55)
+                .blendMode(isDarkTheme ? .screen : .plusDarker)
+                .colorMultiply(
+                    isDarkTheme
+                        ? .white
+                        : Color(red: 0.32, green: 0.28, blue: 0.55)
+                )
+
+            // 5. 외곽 비네팅 — 우주의 깊이감
+            RadialGradient(
+                colors: [
+                    .clear,
+                    (isDarkTheme ? Color.black : Color(red: 0.22, green: 0.18, blue: 0.42))
+                        .opacity(isDarkTheme ? 0.50 : 0.18)
+                ],
+                center: .center,
+                startRadius: 240,
+                endRadius: 760
+            )
+        }
+        .ignoresSafeArea()
+        .animation(.easeInOut(duration: 0.32), value: isDarkTheme)
+    }
+
+    @ViewBuilder
+    private func nebulaCloud(color: Color, center: UnitPoint, radius: CGFloat, opacity: Double) -> some View {
+        RadialGradient(
+            colors: [color.opacity(opacity), color.opacity(opacity * 0.35), .clear],
+            center: center,
+            startRadius: 8,
+            endRadius: radius
+        )
+        .blendMode(isDarkTheme ? .screen : .plusLighter)
+    }
+
+    private var lightBaseColors: [Color] {
+        [
+            Color(red: 0.85, green: 0.89, blue: 1.00),  // periwinkle
+            Color(red: 0.94, green: 0.88, blue: 1.00),  // pale lavender
+            Color(red: 0.99, green: 0.91, blue: 0.95)   // soft rose
+        ]
+    }
+
+    private var darkBaseColors: [Color] {
+        [
+            Color(red: 0.02, green: 0.03, blue: 0.10),
+            Color(red: 0.05, green: 0.04, blue: 0.18),
+            Color(red: 0.01, green: 0.01, blue: 0.06)
+        ]
     }
 }
 
