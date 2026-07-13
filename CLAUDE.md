@@ -9,7 +9,8 @@
 
 ## 기술 스택
 - Swift + SwiftUI (macOS 14+)
-- Claude API (claude-sonnet-4-6) — URLSession 기반
+- Ollama 로컬 LLM (기본 qwen3:14b) — localhost:11434, URLSession 기반
+- 로컬 지식 연동 — Obsidian vault·Developer 폴더 md 검색 주입 (보안 범위 북마크)
 - SwiftData (로컬 저장)
 - Xcode Archive → notarized .dmg (배포)
 

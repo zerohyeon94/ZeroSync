@@ -11,7 +11,6 @@ final class ChatViewModel {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isLoading else { return }
 
-        let apiKey = UserDefaults.standard.string(forKey: "apiKey") ?? ""
         inputText = ""
         isLoading = true
         errorMessage = nil
@@ -24,10 +23,15 @@ final class ChatViewModel {
         let userMsg = Message(content: text, isUser: true)
         context.insert(userMsg)
 
-        let service = ClaudeService(apiKey: apiKey)
+        // 로컬 문서 검색은 파일 IO가 많아 백그라운드에서 수행
+        let knowledge = await Task.detached(priority: .userInitiated) {
+            KnowledgeService.buildContext(for: text)
+        }.value
+
+        let service = OllamaService()
         do {
-            async let alphaTask = service.send(history: fullHistory, persona: .alpha)
-            async let betaTask  = service.send(history: fullHistory, persona: .beta)
+            async let alphaTask = service.send(history: fullHistory, persona: .alpha, knowledge: knowledge)
+            async let betaTask  = service.send(history: fullHistory, persona: .beta, knowledge: knowledge)
             let (alphaReply, betaReply) = try await (alphaTask, betaTask)
             context.insert(Message(content: alphaReply, isUser: false, persona: .alpha))
             context.insert(Message(content: betaReply,  isUser: false, persona: .beta))
