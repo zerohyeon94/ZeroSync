@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zerosync-bot"
+version = "0.0.0"
+description = "Discord 기반 멀티 에이전트 오케스트레이터 (ZeroSync v2)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+zerosync = "bot.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["bot*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+# 0.16부터 기본 대상에 Markdown이 포함되므로 Python 파일로 한정한다 (docs/ 원문 보존)
+include = ["*.py", "*.pyi", "**/pyproject.toml"]
+extend-exclude = ["menubar"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle 오류
+    "W",   # pycodestyle 경고
+    "F",   # pyflakes
+    "I",   # import 정렬
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+]
