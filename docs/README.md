@@ -44,7 +44,8 @@ SPEC.md와 운영 규약이 다르면 운영 규약을 따른다.
 | CLAUDE.md, AGENTS.md 봇 개발 기준으로 재작성 | 완료 |
 | SPEC.md 저장소 반영 | 미시작 |
 | v1 Xcode 프로젝트를 `menubar/`로 이동 | 완료 |
-| 봇 코드 (`bot/`) | 미시작 |
+| 봇 골격 (`bot/`, pytest·ruff 설정) | 완료 |
+| 봇 기능 구현 | 미시작 |
 
 ---
 

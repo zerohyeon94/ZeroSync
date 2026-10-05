@@ -21,18 +21,19 @@ ZeroSync는 Discord 기반 멀티 에이전트 오케스트레이터(v2)다. Zer
 
 | 경로 | 내용 | 상태 |
 |------|------|------|
-| `bot/` | 봇 본체 (워크플로, 상태, 에이전트 호출, GitHub·볼트 쓰기) | 미작성 |
-| `bot/discord_io/` | Discord 입출력 계층. 워크플로 로직은 이 계층 밖에 둔다 | 미작성 |
-| `tests/` | pytest 테스트 | 미작성 |
+| `bot/` | 봇 본체 (워크플로, 상태, 에이전트 호출, GitHub·볼트 쓰기). `python -m bot`이 진입점 | 골격 |
+| `bot/discord_io/` | Discord 입출력 계층. 워크플로 로직은 이 계층 밖에 둔다 | 골격 |
+| `tests/` | pytest 테스트 | 골격 |
 | `menubar/` | v1 Swift 메뉴바 앱 (`ZeroSync/`, `ZeroSync.xcodeproj`, 테스트 타깃) | 보류 |
 | `docs/` | 봇 자체 개발 문서 | 사용 중 |
 
 ## 개발 환경과 명령
 
-- Python 3.11 이상
+- Python 3.11 이상 (`.python-version`). 의존성과 도구 설정은 `pyproject.toml`에 있다
+- 환경 준비: `python3.11 -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"`
 - 테스트: `pytest`
-- 린트·포맷: `ruff check .`, `ruff format .`
-- 봇 코드가 아직 없으므로 현재는 실행 대상이 없다. 봇 코드가 들어오면 PR 전에 두 명령을 모두 통과시킨다
+- 린트·포맷: `ruff check .`, `ruff format --check .`
+- PR 전에 위 명령을 모두 통과시킨다
 
 v1 메뉴바 앱을 수정할 때만 Xcode 명령을 쓴다. 저장소 루트에서 실행한다.
 
