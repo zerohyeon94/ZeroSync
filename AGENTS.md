@@ -24,7 +24,7 @@ ZeroSync는 Discord 기반 멀티 에이전트 오케스트레이터(v2)다. Zer
 | `bot/` | 봇 본체 (워크플로, 상태, 에이전트 호출, GitHub·볼트 쓰기) | 미작성 |
 | `bot/discord_io/` | Discord 입출력 계층. 워크플로 로직은 이 계층 밖에 둔다 | 미작성 |
 | `tests/` | pytest 테스트 | 미작성 |
-| `menubar/` | v1 Swift 메뉴바 앱 | 이동 예정 (현재는 루트의 `ZeroSync/`, `ZeroSync.xcodeproj`) |
+| `menubar/` | v1 Swift 메뉴바 앱 (`ZeroSync/`, `ZeroSync.xcodeproj`, 테스트 타깃) | 보류 |
 | `docs/` | 봇 자체 개발 문서 | 사용 중 |
 
 ## 개발 환경과 명령
@@ -34,10 +34,10 @@ ZeroSync는 Discord 기반 멀티 에이전트 오케스트레이터(v2)다. Zer
 - 린트·포맷: `ruff check .`, `ruff format .`
 - 봇 코드가 아직 없으므로 현재는 실행 대상이 없다. 봇 코드가 들어오면 PR 전에 두 명령을 모두 통과시킨다
 
-v1 메뉴바 앱을 수정할 때만 Xcode 명령을 쓴다.
+v1 메뉴바 앱을 수정할 때만 Xcode 명령을 쓴다. 저장소 루트에서 실행한다.
 
-- 빌드: `xcodebuild -scheme ZeroSync -project ZeroSync.xcodeproj build`
-- 테스트: `xcodebuild -scheme ZeroSync -project ZeroSync.xcodeproj test`
+- 빌드: `xcodebuild -scheme ZeroSync -project menubar/ZeroSync.xcodeproj build`
+- 테스트: `xcodebuild -scheme ZeroSync -project menubar/ZeroSync.xcodeproj test`
 
 ## 코딩 원칙
 
