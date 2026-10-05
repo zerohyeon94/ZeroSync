@@ -46,6 +46,7 @@ SPEC.md와 운영 규약이 다르면 운영 규약을 따른다.
 | v1 Xcode 프로젝트를 `menubar/`로 이동 | 완료 |
 | 봇 골격 (`bot/`, pytest·ruff 설정) | 완료 |
 | 에이전트 출력 스키마 (의견, 리뷰 판정) | 완료 |
+| 설계 요약 스키마 (change_type, target_feature, slug) | 완료 (나머지 필드는 SPEC.md 대기) |
 | 봇 기능 구현 (SQLite, 에이전트 호출, discord_io) | 미시작 |
 
 ---
