@@ -8,7 +8,9 @@ version = "0.0.0"
 description = "Discord 기반 멀티 에이전트 오케스트레이터 (ZeroSync v2)"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "pydantic>=2.7",
+]
 
 [project.optional-dependencies]
 dev = [
