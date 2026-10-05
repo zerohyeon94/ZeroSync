@@ -25,7 +25,7 @@ AI 엔진으로 **Anthropic Claude API (claude-sonnet-4-6)**를 사용한다.
 ## 근거
 
 - INTJ/ISFJ 페르소나 유지에 Claude가 시스템 프롬프트 준수율이 높음
-- `@anthropic-ai/sdk`로 Node.js 환경에서 간단하게 연동 가능
+- URLSession 기반 HTTP 클라이언트로 Swift에서 직접 연동 가능
 - 한국어 응답 자연스러움
 
 ## 트레이드오프

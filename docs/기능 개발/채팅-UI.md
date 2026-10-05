@@ -13,9 +13,9 @@ Alpha는 냉색(딥 블루), Beta는 난색(웜 앰버)으로 시각적으로 �
 
 | 파일 | 역할 |
 |------|------|
-| `src/renderer/src/components/ChatWindow.tsx` | 전체 채팅 레이아웃, 메시지 목록, 입력창 |
-| `src/renderer/src/components/MessageBubble.tsx` | 단일 메시지 말풍선 (Alpha/Beta/User 구분) |
-| `src/renderer/src/styles/globals.css` | 다크 모드 기반 글로벌 스타일 |
+| `ZeroSync/Views/ChatView.swift` | 전체 채팅 레이아웃, 메시지 목록, 입력창 |
+| `ZeroSync/Views/MessageBubble.swift` | 단일 메시지 말풍선 (Alpha/Beta/User 구분) |
+| `ZeroSync/Models/Message.swift` | SwiftData 메시지 모델 |
 
 ## 디자인 원칙
 
@@ -27,12 +27,12 @@ Alpha는 냉색(딥 블루), Beta는 난색(웜 앰버)으로 시각적으로 �
 
 ## 구현 시 주의사항
 
-- 메뉴바 팝업은 크기가 제한적 → 스크롤 처리 필수
-- 스트리밍 응답 지원 여부 결정 필요 (SSE vs 완성 후 표시)
-- 코드 블록 렌더링: Alpha 응답에서 빈번 → highlight.js 연동 고려
+- 메뉴바 팝업은 크기가 제한적 → ScrollView 처리 필수
+- 스트리밍 응답: URLSession AsyncBytes 또는 완성 후 표시 결정 필요
+- 코드 블록 렌더링: Alpha 응답에서 빈번 → AttributedString 또는 SwiftUI Text 포맷팅 고려
 
 ## 미결 사항
 
-- [ ] 스트리밍 응답 지원 여부
-- [ ] 마크다운 렌더링 (Alpha의 코드 블록)
-- [ ] 메시지 최대 표시 개수 (성능)
+- [ ] 스트리밍 응답 지원 여부 (URLSession AsyncBytes)
+- [ ] 마크다운 렌더링 (Alpha의 코드 블록 — AttributedString)
+- [ ] 메시지 최대 표시 개수 (SwiftData fetch limit)
