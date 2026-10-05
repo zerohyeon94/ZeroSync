@@ -5,7 +5,7 @@
 
 import json
 import re
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
@@ -35,15 +35,18 @@ def extract_json(text: str) -> str:
     return stripped
 
 
-def parse_agent_output(text: str, model: type[M]) -> M:
-    """응답 텍스트를 model로 검증해 돌려준다. 실패하면 AgentOutputError."""
+def parse_agent_output(text: str, model: type[M], context: dict[str, Any] | None = None) -> M:
+    """응답 텍스트를 model로 검증해 돌려준다. 실패하면 AgentOutputError.
+
+    context는 pydantic 검증 컨텍스트로 그대로 넘긴다 (예: 설계 요약의 기능 파일 목록).
+    """
     raw = extract_json(text)
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as e:
         raise AgentOutputError(f"JSON 구문 오류: {e.msg} (줄 {e.lineno}, 열 {e.colno})") from e
     try:
-        return model.model_validate(data)
+        return model.model_validate(data, context=context)
     except ValidationError as e:
         raise AgentOutputError(_format_validation_error(e)) from e
 
