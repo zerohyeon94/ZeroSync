@@ -1,12 +1,20 @@
-# 의존성
-node_modules/
-.pnp
-.pnp.js
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # 빌드 결과물
+build/
 dist/
-out/
-release/
+
+# ZeroSync 봇 런타임 (SQLite, 테스트·CLI 전체 로그)
+.zerosync/
 
 # 환경변수
 .env
@@ -31,7 +39,6 @@ xcuserdata/
 
 # 로그
 *.log
-npm-debug.log*
 
 # 참고 자료 (추후 삭제 예정)
 참고/
