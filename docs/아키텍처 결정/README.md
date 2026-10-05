@@ -24,6 +24,8 @@ Architecture Decision Records — 중요한 기술 선택의 근거를 남긴다
 ## ADR 목록
 
 - [ADR-001](ADR-001-Electron-선택.md) — macOS 앱 프레임워크로 Electron 선택 *(폐기 — ADR-004로 대체)*
-- [ADR-002](ADR-002-Claude-API-sonnet-4-6.md) — AI 엔진으로 Claude API 선택
-- [ADR-003](ADR-003-페르소나-분리-설계.md) — Alpha/Beta 페르소나를 별도 시스템 프롬프트로 분리
+- [ADR-002](ADR-002-Claude-API-sonnet-4-6.md) — AI 엔진으로 Claude API 선택 *(v1 앱 한정)*
+- [ADR-003](ADR-003-페르소나-분리-설계.md) — Alpha/Beta 페르소나를 별도 시스템 프롬프트로 분리 *(v1 앱 한정)*
 - [ADR-004](ADR-004-Swift-SwiftUI-전환.md) — Electron에서 Swift + SwiftUI로 전환
+- [샌드박스 해제](2026-07-12-샌드박스-해제.md) — Accessibility 창 제목 감지를 위해 App Sandbox 해제 *(v1 앱 한정, 번호 없음)*
+- [ADR-005](ADR-005-Discord-오케스트레이터-전환.md) — ZeroSync를 Discord 멀티 에이전트 오케스트레이터(v2)로 전환
