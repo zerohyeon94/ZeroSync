@@ -22,7 +22,7 @@ ZeroSync는 Discord 기반 멀티 에이전트 오케스트레이터(v2)다. Zer
 | 경로 | 내용 | 상태 |
 |------|------|------|
 | `bot/` | 봇 본체 (워크플로, 상태, 에이전트 호출, GitHub·볼트 쓰기). `python -m bot`이 진입점 | 골격 |
-| `bot/schemas/` | 에이전트 출력 스키마(의견, 리뷰 판정)와 JSON 추출·검증 | 구현 |
+| `bot/schemas/` | 에이전트 출력 스키마(의견, 리뷰 판정, 설계 요약 일부)와 JSON 추출·검증 | 구현 |
 | `bot/discord_io/` | Discord 입출력 계층. 워크플로 로직은 이 계층 밖에 둔다 | 골격 |
 | `tests/` | pytest 테스트 | 골격 |
 | `menubar/` | v1 Swift 메뉴바 앱 (`ZeroSync/`, `ZeroSync.xcodeproj`, 테스트 타깃) | 보류 |
