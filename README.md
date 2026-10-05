@@ -15,7 +15,7 @@ Zero가 Discord 포럼 게시글에 아이디어를 올리면, Beta · Claude와
 
 ## 현재 상태
 
-Phase 0 (문서 정비). 봇 코드는 아직 없다. 저장소 루트의 Xcode 프로젝트는 v1 메뉴바 앱이며 `menubar/`로 옮길 예정이다.
+Phase 0 (문서 정비). 봇 코드는 아직 없다. v1 메뉴바 앱(Swift)은 `menubar/`에 있다.
 
 ## 문서
 
