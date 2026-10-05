@@ -43,7 +43,7 @@ SPEC.md와 운영 규약이 다르면 운영 규약을 따른다.
 | ADR-005 (v2 전환) | 완료 |
 | CLAUDE.md, AGENTS.md 봇 개발 기준으로 재작성 | 완료 |
 | SPEC.md 저장소 반영 | 미시작 |
-| v1 Xcode 프로젝트를 `menubar/`로 이동 | 미시작 |
+| v1 Xcode 프로젝트를 `menubar/`로 이동 | 완료 |
 | 봇 코드 (`bot/`) | 미시작 |
 
 ---
@@ -58,5 +58,5 @@ v2 봇
 - **에이전트**: Claude CLI, Codex CLI
 - **도구**: pytest, ruff
 
-v1 메뉴바 앱 (보류, `menubar/`로 이동 예정)
+v1 메뉴바 앱 (보류, `menubar/`)
 - Swift + SwiftUI (macOS 14+), Ollama 로컬 LLM, SwiftData
