@@ -136,7 +136,7 @@ launchd (LaunchAgent, 로그인 사용자 세션)
 | 테스트 실패 재시도 | 2회 초과 시 NEEDS_HUMAN | 운영 규약 1.7, Q2 [확정] |
 | 형식 오류 | 재요청 1회 후에도 실패하면 원문 게시 + NEEDS_HUMAN | 운영 규약 2.1, 2.5 |
 | CLI 타임아웃 | 3,600초 | `projects.yaml`의 `cli_timeout_sec` |
-| OPINIONS 질문 수 | 제한 없음. 5회 초과 시 "/decide 대기 중" 한 줄 알림 | 운영 규약 1.6 |
+| OPINIONS 질문 수 | 제한 없음. 5회 초과 시 "/decide 대기 중" 한 줄 알림 (넘는 순간 1회). 처음 게시글과 `/debate`는 세지 않고, 게시글 뒤 Zero의 일반 메시지와 `@claude`/`@codex` 메시지만 1회씩 센다 [확정] (2026-10-07) | 운영 규약 1.6 |
 | 재멘션 | Zero 대기 24시간 초과 시 1회 | 운영 규약 2.5 |
 
 ### 3.4 구현 원칙
@@ -292,7 +292,7 @@ class AgentResult:
 
 ## 7. 모듈 구조
 
-현재 develop에 있는 것은 `bot/__main__.py`(골격), `bot/schemas/`(구현), `bot/agents/`(인터페이스·프로세스 실행·가짜 러너), `bot/discord_io/`(빈 패키지)다. 아래는 목표 구조다 [제안].
+현재 develop에 있는 것은 `bot/__main__.py`(골격), `bot/schemas/`(구현), `bot/agents/`(인터페이스·프로세스 실행·가짜 러너), `bot/clock.py`, `bot/store/`(SQLite 스키마 v1·저장소), `bot/workflow/state.py`(상태 enum, OPINIONS 범위 전이), `bot/discord_io/`(빈 패키지)다. 아래는 목표 구조다 [제안].
 
 ```
 bot/
@@ -515,7 +515,7 @@ limits:
 1. `feat/0-agent-runner` — `AgentRunner` 인터페이스, `FakeAgentRunner`, 자식 프로세스 실행(타임아웃·취소, 실행 로그 저장)
    - CLI 러너는 CLI 설치 후 별도 스레드로 분리했다 (2026-10-07 Zero 승인): 이 맥에 `claude`·`codex`가 없어 V1~V3을 확인할 수 없었다
 1-2. `feat/0-cli-runners` — `ClaudeCliRunner`·`CodexCliRunner`. V1~V3 확인 후 명령 형식 결정. 실제 CLI 호출은 수동 스모크 스크립트로만 확인
-2. `feat/0-store-state` — SQLite 스키마·저장소, 상태 enum과 OPINIONS 범위의 전이 규칙
+2. `feat/0-store-state` — SQLite 스키마·저장소, 상태 enum과 OPINIONS 범위의 전이 규칙 (`/decide` → DESIGNING, 모든 상태의 `/stop` 포함). 효과는 타입만 정의하고 실행은 엔진 스레드에서
 3. `feat/0-config` — `projects.yaml`, `.env` 로더, 단일 인스턴스 락
 4. `feat/0-discord-opinions` — `ChatIO`, 포럼 게시글 감지, 의견 프롬프트, 병렬 호출, render, 웹훅 게시, 멘션 규칙
 5. `chore/0-launchd` — plist와 실행 문서 (Phase 3로 미뤄도 됨)
