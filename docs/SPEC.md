@@ -1,6 +1,6 @@
 # ZeroSync v2 봇 설계서 (SPEC)
 
-> 작성: 2026-09-30 (claude.ai 초안) | 갱신: 2026-10-06 (저장소 반영) | 상태: Phase 0 — 일부 미결
+> 작성: 2026-09-30 (claude.ai 초안) | 갱신: 2026-10-07 (11장 미결 사항 결정) | 상태: Phase 1 진행 중
 > 상위 문서: [운영 규약](운영-규약.md). **이 문서와 운영 규약이 다르면 운영 규약을 따른다.**
 > 관련: [ADR-005](아키텍처%20결정/ADR-005-Discord-오케스트레이터-전환.md), [AGENTS.md](../AGENTS.md)
 
@@ -126,14 +126,14 @@ launchd (LaunchAgent, 로그인 사용자 세션)
 | AWAIT_DOC_APPROVAL | `/skip` | DONE | 결정 노트만 완료 처리, worktree 정리 (운영 규약 3.9-6, 4.6) |
 | 모든 상태 | `/stop` | STOPPED | 실행 중 CLI 종료, Issue·브랜치·볼트 처리 (1.8, 3.3, 3.5) |
 | 실행 중 상태 | 한도 초과 | NEEDS_HUMAN | `needs-human` 라벨, 멘션 |
-| NEEDS_HUMAN | `/resume` | 직전 상태 | 카운터는 초기화하지 않는다 [제안][미결] |
+| NEEDS_HUMAN | `/resume` | 직전 상태 | 카운터는 유지하고 초과한 한도만 1회 늘린다 [확정] (Q4) |
 
 ### 3.3 한도 [확정 + 제안]
 
 | 항목 | 값 | 근거 |
 |---|---|---|
 | 리뷰 라운드 | 3회 초과 시 NEEDS_HUMAN | 운영 규약 1.7, 2.5 |
-| 테스트 실패 재시도 | 2회 초과 시 NEEDS_HUMAN | 운영 규약 1.7 "예: 2회" [미결] |
+| 테스트 실패 재시도 | 2회 초과 시 NEEDS_HUMAN | 운영 규약 1.7, Q2 [확정] |
 | 형식 오류 | 재요청 1회 후에도 실패하면 원문 게시 + NEEDS_HUMAN | 운영 규약 2.1, 2.5 |
 | CLI 타임아웃 | 3,600초 | `projects.yaml`의 `cli_timeout_sec` |
 | OPINIONS 질문 수 | 제한 없음. 5회 초과 시 "/decide 대기 중" 한 줄 알림 | 운영 규약 1.6 |
@@ -142,7 +142,7 @@ launchd (LaunchAgent, 로그인 사용자 세션)
 ### 3.4 구현 원칙
 - 전이 규칙은 `bot/workflow/state.py`에 **순수 함수**로 둔다: `(현재 상태, 이벤트) → (다음 상태, 실행할 효과 목록)`. I/O 없이 단위 테스트로 전부 고정한다
 - 효과(에이전트 호출, GitHub, 볼트, 게시)는 `workflow/engine.py`가 인터페이스를 통해 실행한다
-- 상태 변경은 SQLite 트랜잭션 안에서 이벤트 기록과 함께 저장한다. 봇이 재시작되면 "실행 중" 상태의 작업은 NEEDS_HUMAN으로 돌리고 Zero에게 알린다 (중간 결과를 신뢰하지 않음) [제안]
+- 상태 변경은 SQLite 트랜잭션 안에서 이벤트 기록과 함께 저장한다. 봇이 재시작되면 "실행 중" 상태의 작업은 NEEDS_HUMAN으로 돌리고 Zero에게 알린다 (중간 결과를 신뢰하지 않음) [확정] (Q8)
 
 ---
 
@@ -157,11 +157,11 @@ launchd (LaunchAgent, 로그인 사용자 세션)
 | `/debate` | OPINIONS | 상대 의견에 대한 반박 1회씩 | [확정] |
 | `/decide <방향>` | OPINIONS | 방향 확정 → DESIGNING | [확정] |
 | `/approve` | AWAIT_DESIGN_APPROVAL, AWAIT_DOC_APPROVAL | 현재 단계 승인 | [확정] |
-| `/revise <요청>` | AWAIT_DESIGN_APPROVAL, AWAIT_DOC_APPROVAL | 수정안 다시 작성 | 문서 반영 [확정], 설계 [제안] |
+| `/revise <요청>` | AWAIT_DESIGN_APPROVAL, AWAIT_DOC_APPROVAL | 수정안 다시 작성 | [확정] (설계 단계는 Q7) |
 | `/skip` | AWAIT_DOC_APPROVAL | 기능 정의서 반영 생략 | [확정] |
 | `/fix 권장 반영` | AWAIT_MERGE | [권장] 항목 1회 추가 수정 | [확정] |
 | `/stop` | 종료 상태 외 전부 | 긴급 정지 | [확정] |
-| `/resume` | NEEDS_HUMAN | 직전 상태에서 재개 | [제안][미결] |
+| `/resume` | NEEDS_HUMAN | 직전 상태에서 재개 | [확정] (Q4) |
 | `/status` | 전부 | 상태, 라운드 수, 재시도 수, 대기 시간 | [확정] |
 | `/ping` | 전부 (#zerosync-ops에서도) | 봇 생존, 실행 중 CLI 수 | [확정] |
 
@@ -194,7 +194,8 @@ class AgentRequest:
 
 @dataclass(frozen=True)
 class AgentResult:
-    exit_code: int
+    status: RunStatus            # ok | error | timeout | cancelled
+    exit_code: int | None        # 프로세스를 띄우지 못하면 None
     stdout: str                  # parse_agent_output()에 넘기는 원문
     stderr: str
     session_id: str | None
@@ -203,6 +204,8 @@ class AgentResult:
 ```
 
 - 실제 구현: `ClaudeCliRunner`, `CodexCliRunner`. 테스트: `FakeAgentRunner`(정해 둔 응답을 돌려줌)
+- `status`는 종료 코드만으로 구분할 수 없는 타임아웃·취소를 나타낸다. 8장 `agent_runs.status`의 `running`·`invalid_output`은 저장 계층과 출력 검증이 정한다 (2026-10-07 Zero 승인으로 추가)
+- 구현됨: `bot/agents/base.py`(인터페이스), `bot/agents/process.py`(자식 프로세스 실행, 타임아웃·취소, 실행 로그), `bot/agents/fake.py`
 - 러너는 출력을 해석하지 않는다. JSON 추출과 검증은 `bot/schemas/extract.py`의 `parse_agent_output`가 한다 (구현됨)
 
 ### 5.2 단계별 명령 [확정 + 검증 필요]
@@ -237,7 +240,7 @@ class AgentResult:
 | IMPLEMENT, FIX | `ImplementationReport` | [제안] |
 | DOC_SYNC | `DocSyncProposal` | [제안] (형태는 운영 규약 3.9-3) |
 
-`DesignSummary` 추가 필드 [제안][미결]
+`DesignSummary` 추가 필드 [확정] (Q1, 대상 기능은 1개)
 
 | 키 | 타입·제약 | 쓰임 |
 |---|---|---|
@@ -262,7 +265,7 @@ class AgentResult:
 ### 6.1 Discord (`bot/discord_io/`)
 - 워크플로는 `ChatIO` 인터페이스만 안다: `post(thread, author, text, *, mention, attachments)`, `set_tags(thread, tags)`, `notify_ops(text)` [제안]
 - 게시 이름: `[Beta · Claude]`, `[Alpha · Codex]`, `[ZeroSync]`(운영 규약 1.2). 에이전트 메시지는 웹훅의 username 지정으로 게시한다
-- 웹훅은 봇이 시작할 때 각 포럼 채널에서 찾거나 만든다(Manage Webhooks 권한). 웹훅 URL을 `.env`에 두지 않아도 된다 [제안][미결]
+- 웹훅은 봇이 시작할 때 각 포럼 채널에서 찾거나 만든다(Manage Webhooks 권한). 웹훅 URL을 `.env`에 두지 않는다 [확정] (Q6)
 - 멘션은 이벤트 종류의 `ACTION_REQUIRED` 집합으로만 결정한다. 나머지는 silent 메시지 (운영 규약 2.5) [검증 필요: 웹훅 silent]
 - 길이: 게시용 요약 1,500자 이내, 넘는 전문은 파일 첨부. 1,900자 분할은 안전장치 (운영 규약 2.6)
 - render 계층(`bot/render/`)이 스키마 객체를 텍스트로 바꾼다. Discord에 의존하지 않으므로 Issue·PR·볼트 문서도 같은 계층에서 만든다
@@ -289,7 +292,7 @@ class AgentResult:
 
 ## 7. 모듈 구조
 
-현재 develop에 있는 것은 `bot/__main__.py`(골격), `bot/schemas/`(구현), `bot/discord_io/`(빈 패키지)다. 아래는 목표 구조다 [제안].
+현재 develop에 있는 것은 `bot/__main__.py`(골격), `bot/schemas/`(구현), `bot/agents/`(인터페이스·프로세스 실행·가짜 러너), `bot/discord_io/`(빈 패키지)다. 아래는 목표 구조다 [제안].
 
 ```
 bot/
@@ -299,6 +302,7 @@ bot/
   prompts/             # 단계별 프롬프트 템플릿 (.md)
   agents/
     base.py            # AgentRunner, AgentRequest, AgentResult
+    process.py         # 자식 프로세스 실행 (셸 미사용, 타임아웃·취소, 실행 로그)
     claude.py          # ClaudeCliRunner
     codex.py           # CodexCliRunner
     fake.py            # 테스트용 FakeAgentRunner
@@ -385,6 +389,8 @@ CREATE TABLE agent_runs (
 
 ### 9.1 `bot/projects.yaml` [제안]
 
+저장소에는 값을 비운 `bot/projects.example.yaml`만 커밋하고, 실제 값이 든 `bot/projects.yaml`은 `.gitignore`에 넣는다 [확정] (Q11, 공개 저장소)
+
 ```yaml
 projects:
   gagessi:
@@ -411,7 +417,7 @@ cli:
 
 limits:
   max_review_rounds: 3
-  max_test_retries: 2   # [미결]
+  max_test_retries: 2   # Q2 확정
   cli_timeout_sec: 3600
   concurrent_builds: 1
   merge_poll_sec: 300
@@ -429,7 +435,7 @@ limits:
 | `ZERO_USER_ID` | 명령 권한자 |
 | `OPS_CHANNEL_ID` | #zerosync-ops |
 
-웹훅 URL은 6.1 제안을 채택하면 두지 않는다. 채택하지 않으면 채널별 `WEBHOOK_<PROJECT>` 키를 추가한다.
+웹훅 URL은 두지 않는다. 봇이 시작할 때 찾거나 만든다 (6.1, Q6).
 
 ### 9.3 실행
 - 개발: `tmux` 안에서 `caffeinate -is python -m bot`
@@ -471,7 +477,9 @@ limits:
 
 ## 11. 미결 사항
 
-| # | 질문 | 이 문서의 제안 |
+2026-10-07에 Zero가 Q1~Q11을 모두 결정했다. Q9를 빼면 이 문서의 제안대로다.
+
+| # | 질문 | 결정 |
 |---|---|---|
 | Q1 | 설계 요약 JSON의 나머지 필드 구성, 대상 기능이 여러 개일 수 있는가 | 5.4 표. 대상 기능은 1개로 시작 |
 | Q2 | 테스트 실패 재시도 한도 | 2회 초과 시 NEEDS_HUMAN |
@@ -481,7 +489,7 @@ limits:
 | Q6 | 웹훅 URL을 `.env`에 둘지, 봇이 만들지 | 봇이 시작 시 찾거나 만든다 |
 | Q7 | `/revise`를 설계 승인 단계에서도 쓸지 | 쓴다 (운영 규약 3.3의 "설계 수정 요청"을 명령으로) |
 | Q8 | 봇 재시작 시 실행 중이던 작업 처리 | NEEDS_HUMAN으로 전환하고 알림 |
-| Q9 | ZeroSync 저장소 자체의 기준 브랜치 표기 정리 | 저장소는 반영 완료: AGENTS.md와 운영 규약 4.1이 develop 기준 (PR #2). claude.ai 프로젝트 지침의 "main에서 브랜치"만 develop으로 고치면 된다 |
+| Q9 | ZeroSync 저장소 자체의 기준 브랜치 표기 정리 | 저장소는 반영 완료: AGENTS.md와 운영 규약 4.1이 develop 기준 (PR #2). claude.ai 프로젝트 지침은 Zero가 직접 수정 |
 | Q10 | Obsidian 동기화 방식과 에이전트별 폴더 분리 (초안 10-4) | 운영 규약 3.4로 대부분 정해짐. 동기화는 iCloud 유지 |
 | Q11 | 저장소가 공개(public)이므로 `projects.yaml`(9.1)의 Discord 채널 ID, 로컬 경로를 커밋할지 | 실제 값 파일은 커밋하지 않고 `projects.example.yaml`(값 비움)만 둔다 |
 
@@ -504,7 +512,9 @@ limits:
 ### 12.2 Phase 1 스레드 분할 [제안]
 각 스레드는 develop에서 브랜치를 만들고 draft PR 하나로 끝낸다. 시작 전 범위를 제안하고 Zero의 승인을 받는다.
 
-1. `feat/0-agent-runner` — `AgentRunner` 인터페이스, `ClaudeCliRunner`·`CodexCliRunner`, `FakeAgentRunner`, 타임아웃·취소, 실행 로그 저장. 실제 CLI 호출은 수동 스모크 스크립트로만 확인 (V1, V2를 이 스레드에서 확인)
+1. `feat/0-agent-runner` — `AgentRunner` 인터페이스, `FakeAgentRunner`, 자식 프로세스 실행(타임아웃·취소, 실행 로그 저장)
+   - CLI 러너는 CLI 설치 후 별도 스레드로 분리했다 (2026-10-07 Zero 승인): 이 맥에 `claude`·`codex`가 없어 V1~V3을 확인할 수 없었다
+1-2. `feat/0-cli-runners` — `ClaudeCliRunner`·`CodexCliRunner`. V1~V3 확인 후 명령 형식 결정. 실제 CLI 호출은 수동 스모크 스크립트로만 확인
 2. `feat/0-store-state` — SQLite 스키마·저장소, 상태 enum과 OPINIONS 범위의 전이 규칙
 3. `feat/0-config` — `projects.yaml`, `.env` 로더, 단일 인스턴스 락
 4. `feat/0-discord-opinions` — `ChatIO`, 포럼 게시글 감지, 의견 프롬프트, 병렬 호출, render, 웹훅 게시, 멘션 규칙

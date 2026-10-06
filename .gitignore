@@ -16,6 +16,9 @@ dist/
 # ZeroSync 봇 런타임 (SQLite, 테스트·CLI 전체 로그)
 .zerosync/
 
+# 봇 설정 실제 값 (공개 저장소라 커밋 금지, projects.example.yaml만 커밋. SPEC Q11)
+bot/projects.yaml
+
 # 환경변수
 .env
 .env.local
