@@ -15,7 +15,7 @@ Zero가 Discord 포럼 게시글에 아이디어를 올리면, Beta · Claude와
 
 ## 현재 상태
 
-Phase 0 (문서 정비). 봇 코드는 아직 없다. v1 메뉴바 앱(Swift)은 `menubar/`에 있다.
+Phase 0 (문서 정비) 마무리 단계. 봇 코드는 골격과 에이전트 출력 스키마만 있다. v1 메뉴바 앱(Swift)은 `menubar/`에 있다.
 
 ## 문서
 
@@ -23,4 +23,4 @@ Phase 0 (문서 정비). 봇 코드는 아직 없다. v1 메뉴바 앱(Swift)은
 - [ADR-005](docs/아키텍처%20결정/ADR-005-Discord-오케스트레이터-전환.md) — v2 전환 결정
 - [문서 인덱스](docs/README.md) — 개발 일지, ADR, 트러블슈팅 등
 - [AGENTS.md](AGENTS.md) — 이 저장소에서 작업하는 에이전트용 개발 규칙
-- SPEC.md — 봇 설계 (추가 예정)
+- [SPEC](docs/SPEC.md) — 봇 설계 (상태 머신, 명령어, 모듈, 데이터 모델, 로드맵)
