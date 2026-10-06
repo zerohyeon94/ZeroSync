@@ -10,9 +10,9 @@
 | 문서 | 내용 | 상태 |
 |------|------|------|
 | [운영-규약.md](운영-규약.md) | 역할·권한, Discord 대화 형태, 기록 위치, GitHub 규칙 | 확정 (2026-10-05) |
-| SPEC.md | 봇 설계 (명령어, 상태 머신, 구성 요소) | 추가 예정 |
+| [SPEC.md](SPEC.md) | 봇 설계 (상태 머신, 명령어, 에이전트 호출, 모듈, 데이터 모델, 로드맵) | Phase 0, 일부 미결 |
 | [ADR-005](아키텍처%20결정/ADR-005-Discord-오케스트레이터-전환.md) | v2 전환 결정 | 확정 |
-| [CONCEPT.md](CONCEPT.md) | v1 메뉴바 앱 기획서 | v1 한정, SPEC.md로 대체 예정 |
+| [CONCEPT.md](CONCEPT.md) | v1 메뉴바 앱 기획서 | v1 한정, SPEC.md로 대체 |
 
 SPEC.md와 운영 규약이 다르면 운영 규약을 따른다.
 
@@ -42,12 +42,12 @@ SPEC.md와 운영 규약이 다르면 운영 규약을 따른다.
 | 운영 규약 확정 및 저장소 반영 | 완료 |
 | ADR-005 (v2 전환) | 완료 |
 | CLAUDE.md, AGENTS.md 봇 개발 기준으로 재작성 | 완료 |
-| SPEC.md 저장소 반영 | 미시작 |
+| SPEC.md 저장소 반영 | 완료 |
 | v1 Xcode 프로젝트를 `menubar/`로 이동 | 완료 |
 | 봇 골격 (`bot/`, pytest·ruff 설정) | 완료 |
 | 에이전트 출력 스키마 (의견, 리뷰 판정) | 완료 |
-| 설계 요약 스키마 (change_type, target_feature, slug) | 완료 (나머지 필드는 SPEC.md 대기) |
-| 봇 기능 구현 (SQLite, 에이전트 호출, discord_io) | 미시작 |
+| 설계 요약 스키마 (change_type, target_feature, slug) | 완료 (나머지 필드는 SPEC 11장 Q1 미결) |
+| 봇 기능 구현 (SPEC 12장 Phase 1부터) | 미시작 |
 
 ---
 
