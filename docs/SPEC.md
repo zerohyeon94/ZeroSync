@@ -56,7 +56,7 @@ launchd (LaunchAgent, 로그인 사용자 세션)
 
 - 봇은 자식 프로세스를 `asyncio.create_subprocess_exec`로 띄운다. 셸 문자열(`shell=True`)은 쓰지 않는다 (프롬프트에 섞인 문자가 셸 명령으로 해석되는 것을 막기 위해)
 - 자식 프로세스가 실행되는 동안에도 이벤트 루프는 `/stop`, `/status`, `/ping`에 응답해야 한다
-- 같은 맥에서 봇 인스턴스는 하나만 실행한다. 시작 시 lock 파일(`~/.zerosync/bot.lock`)을 잡지 못하면 종료한다 [제안]
+- 같은 맥에서 봇 인스턴스는 하나만 실행한다. 시작 시 lock 파일(`paths.db`와 같은 폴더의 `bot.lock`, 기본 `~/.zerosync/bot.lock`)을 `flock`으로 잡지 못하면 종료한다. 프로세스가 끝나면 운영체제가 락을 푼다 (2026-10-07 구현)
 
 ### 2.2 사람이 쓰는 화면
 봇 자체에는 UI가 없다. Zero는 Discord(지시·알림), GitHub(PR 확인·merge), Obsidian(결정·기능 문서)을 쓴다. Phase 6의 메뉴바 대시보드는 SQLite만 읽는다 (운영 규약 1.11).
@@ -292,7 +292,7 @@ class AgentResult:
 
 ## 7. 모듈 구조
 
-현재 develop에 있는 것은 `bot/__main__.py`(골격), `bot/schemas/`(구현), `bot/agents/`(인터페이스·프로세스 실행·가짜 러너), `bot/clock.py`, `bot/store/`(SQLite 스키마 v1·저장소), `bot/workflow/state.py`(상태 enum, OPINIONS 범위 전이), `bot/discord_io/`(빈 패키지)다. 아래는 목표 구조다 [제안].
+현재 develop에 있는 것은 `bot/__main__.py`(골격), `bot/schemas/`(구현), `bot/agents/`(인터페이스·프로세스 실행·가짜 러너), `bot/clock.py`, `bot/store/`(SQLite 스키마 v1·저장소), `bot/workflow/state.py`(상태 enum, OPINIONS 범위 전이), `bot/config.py`(설정 로더), `bot/locks.py`(단일 인스턴스 락), `bot/discord_io/`(빈 패키지)다. `bot/__main__.py`는 설정 로드와 락까지만 한다. 아래는 목표 구조다 [제안].
 
 ```
 bot/
@@ -425,6 +425,13 @@ limits:
 ```
 
 - 프로젝트의 GitHub 저장소 이름, 채널 ID는 [미결]이 아니라 실제 값 확인이 필요한 항목이다 (맥에서 채움)
+- 로더 규칙 (`bot/config.py`, 2026-10-07 구현)
+  - 모르는 키는 오류로 처리한다 (오타를 조용히 무시하지 않기 위해)
+  - `paths`의 `vault_projects`는 필수, 나머지와 `cli`·`limits`는 위 값이 기본값이다. 경로는 절대 경로이거나 `~`로 시작해야 한다
+  - `base_branch`는 생략하면 `develop`이고, `main`은 거부한다 (9.5)
+  - `test`는 문자열이면 셸 문법(`shlex`)으로 인자 목록으로 나눠 저장하고, 실행은 셸 없이 한다 (2.1). 목록으로 적어도 된다
+  - 프로젝트 키는 영문 소문자·숫자·`-`, 포럼 채널 ID는 프로젝트끼리 겹치면 안 된다
+  - 오류 메시지에는 위치와 이유만 담고 값은 넣지 않는다
 
 ### 9.2 `.env` (커밋 금지)
 
@@ -436,6 +443,8 @@ limits:
 | `OPS_CHANNEL_ID` | #zerosync-ops |
 
 웹훅 URL은 두지 않는다. 봇이 시작할 때 찾거나 만든다 (6.1, Q6).
+
+실제 환경변수가 있으면 `.env`보다 우선한다. `.env` 파일은 없어도 되지만 네 키는 어느 쪽에든 있어야 한다. ID는 숫자 문자열로 검증하고, 토큰은 `SecretStr`로 담아 출력·repr에 드러나지 않게 한다. 예시는 `.env.example`.
 
 ### 9.3 실행
 - 개발: `tmux` 안에서 `caffeinate -is python -m bot`
@@ -516,7 +525,7 @@ limits:
    - CLI 러너는 CLI 설치 후 별도 스레드로 분리했다 (2026-10-07 Zero 승인): 이 맥에 `claude`·`codex`가 없어 V1~V3을 확인할 수 없었다
 1-2. `feat/0-cli-runners` — `ClaudeCliRunner`·`CodexCliRunner`. V1~V3 확인 후 명령 형식 결정. 실제 CLI 호출은 수동 스모크 스크립트로만 확인
 2. `feat/0-store-state` — SQLite 스키마·저장소, 상태 enum과 OPINIONS 범위의 전이 규칙 (`/decide` → DESIGNING, 모든 상태의 `/stop` 포함). 효과는 타입만 정의하고 실행은 엔진 스레드에서
-3. `feat/0-config` — `projects.yaml`, `.env` 로더, 단일 인스턴스 락
+3. `feat/0-config` — `projects.yaml`, `.env` 로더, 단일 인스턴스 락. 진입점은 설정 로드와 락까지만 연결 (YAML은 PyYAML, `.env`는 직접 파싱: 2026-10-07 Zero 결정)
 4. `feat/0-discord-opinions` — `ChatIO`, 포럼 게시글 감지, 의견 프롬프트, 병렬 호출, render, 웹훅 게시, 멘션 규칙
 5. `chore/0-launchd` — plist와 실행 문서 (Phase 3로 미뤄도 됨)
 

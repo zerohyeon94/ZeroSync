@@ -50,7 +50,8 @@ SPEC.md와 운영 규약이 다르면 운영 규약을 따른다.
 | 에이전트 호출 인터페이스·프로세스 실행 (`bot/agents/`) | 완료 |
 | CLI 러너 (`ClaudeCliRunner`·`CodexCliRunner`) | 미시작 (CLI 설치 필요) |
 | SQLite 저장소·상태 머신 (OPINIONS 범위) | 완료 |
-| 설정 로더, Discord 의견 게시, 엔진 | 미시작 |
+| 설정 로더·단일 인스턴스 락 | 완료 |
+| Discord 의견 게시, 엔진 | 미시작 |
 
 ---
 
