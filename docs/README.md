@@ -52,7 +52,7 @@ SPEC.md와 운영 규약이 다르면 운영 규약을 따른다.
 | SQLite 저장소·상태 머신 (OPINIONS 범위) | 완료 |
 | 설정 로더·단일 인스턴스 락 | 완료 |
 | OPINIONS 단계 엔진 (프롬프트, render, 멘션 규칙) | 완료 |
-| Discord 연결 (`bot/discord_io/`) | 미시작 |
+| Discord 연결 (`bot/discord_io/`) | 구현 (실제 서버 확인 전) |
 
 ---
 

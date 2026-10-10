@@ -143,6 +143,7 @@ launchd (LaunchAgent, 로그인 사용자 세션)
 - 전이 규칙은 `bot/workflow/state.py`에 **순수 함수**로 둔다: `(현재 상태, 이벤트) → (다음 상태, 실행할 효과 목록)`. I/O 없이 단위 테스트로 전부 고정한다
 - 효과(에이전트 호출, GitHub, 볼트, 게시)는 `workflow/engine.py`가 인터페이스를 통해 실행한다
 - 상태 변경은 SQLite 트랜잭션 안에서 이벤트 기록과 함께 저장한다. 봇이 재시작되면 "실행 중" 상태의 작업은 NEEDS_HUMAN으로 돌리고 Zero에게 알린다 (중간 결과를 신뢰하지 않음) [확정] (Q8)
+  - 끝나지 않은 에이전트 실행은 `error`로 닫는다. OPINIONS 작업은 NEEDS_HUMAN으로 보내지 않고 "재시작으로 중단" 안내(멘션) 후 그대로 둔다. 다시 질문하면 재요청된다 [확정] (2026-10-10 Zero 결정). 구현: `Engine.recover_interrupted`
 
 ---
 
@@ -166,6 +167,8 @@ launchd (LaunchAgent, 로그인 사용자 세션)
 | `/ping` | 전부 (#zerosync-ops에서도) | 봇 생존, 실행 중 CLI 수 | [확정] |
 
 - 명령은 discord.py의 앱 명령(슬래시 명령)으로 등록하고, 해당 게시글(스레드) 안에서만 동작한다. 다른 곳에서 쓰면 짧은 오류만 보낸다
+  - 서버(guild) 명령으로 등록해 바로 반영되게 한다. Zero가 아니거나 작업이 없는 게시글이면 Zero에게만 보이는(ephemeral) 오류를 보낸다
+  - `/debate`, `/decide`, `/stop`은 명령 원문을 게시글에 공개로 남기고(무음), 엔진 작업은 백그라운드에서 실행한다. Discord가 3초 안에 응답을 요구하기 때문이다. `/status`, `/ping`은 Zero에게만 보인다 [확정] (2026-10-10 Zero 결정)
 - 상태와 맞지 않는 명령은 상태를 바꾸지 않고 현재 상태와 가능한 명령을 알려 준다
 
 ---
@@ -280,6 +283,9 @@ class AgentResult:
 - 의견·반박은 두 에이전트 응답이 모두 끝난 뒤 Beta, Alpha 순서로 게시하고, 마지막 게시에서 멘션한다. 실행 실패한 쪽은 그 자리에 [ZeroSync] 안내를 게시하고 #zerosync-ops에 알린다 (2026-10-10 구현)
 - 게시 이름: `[Beta · Claude]`, `[Alpha · Codex]`, `[ZeroSync]`(운영 규약 1.2). 에이전트 메시지는 웹훅의 username 지정으로 게시한다
 - 웹훅은 봇이 시작할 때 각 포럼 채널에서 찾거나 만든다(Manage Webhooks 권한). 웹훅 URL을 `.env`에 두지 않는다 [확정] (Q6)
+  - 이름이 `ZeroSync`이고 이 봇이 만든 웹훅을 다시 쓴다. `[ZeroSync]` 안내도 같은 웹훅으로 보내 모든 게시를 한 경로로 처리한다 (discord.py 2.7.1의 `Webhook.send`가 `thread`, `silent`를 지원)
+- 입력 판정 (`bot/discord_io/rules.py`): Zero가 프로젝트 포럼의 스레드에 쓴 메시지만 처리한다. 봇·웹훅 메시지는 무시한다(자기 게시 반복 방지). 포럼 게시글의 첫 메시지는 ID가 스레드 ID와 같으므로 이것으로 게시글과 추가 질문을 구분한다. 제목은 스레드 이름, 본문은 첫 메시지 내용
+- 백그라운드 작업에서 예외가 나면 #zerosync-ops에 멘션해 알린다
 - 멘션은 이벤트 종류의 `ACTION_REQUIRED` 집합으로만 결정한다. 나머지는 silent 메시지 (운영 규약 2.5) [검증 필요: 웹훅 silent]
 - 길이: 게시용 요약 1,500자 이내, 넘는 전문은 파일 첨부. 1,900자 분할은 안전장치 (운영 규약 2.6)
 - render 계층(`bot/render/`)이 스키마 객체를 텍스트로 바꾼다. Discord에 의존하지 않으므로 Issue·PR·볼트 문서도 같은 계층에서 만든다
@@ -306,7 +312,7 @@ class AgentResult:
 
 ## 7. 모듈 구조
 
-현재 develop에 있는 것은 `bot/__main__.py`(골격), `bot/schemas/`(구현), `bot/agents/`(인터페이스·프로세스 실행·가짜 러너·Claude·Codex CLI 러너), `bot/clock.py`, `bot/store/`(SQLite 스키마 v1·저장소), `bot/workflow/`(상태 enum과 OPINIONS 범위 전이, ChatIO 인터페이스, 멘션 규칙, OPINIONS 단계 엔진), `bot/prompts/`(의견·반박), `bot/render/`(의견·안내), `bot/config.py`(설정 로더), `bot/locks.py`(단일 인스턴스 락), `bot/discord_io/`(빈 패키지)다. `bot/__main__.py`는 설정 로드와 락까지만 한다. 아래는 목표 구조다 [제안].
+현재 develop에 있는 것은 `bot/__main__.py`(골격), `bot/schemas/`(구현), `bot/agents/`(인터페이스·프로세스 실행·가짜 러너·Claude·Codex CLI 러너), `bot/clock.py`, `bot/store/`(SQLite 스키마 v1·저장소), `bot/workflow/`(상태 enum과 OPINIONS 범위 전이, ChatIO 인터페이스, 멘션 규칙, OPINIONS 단계 엔진), `bot/prompts/`(의견·반박), `bot/render/`(의견·안내), `bot/config.py`(설정 로더), `bot/locks.py`(단일 인스턴스 락), `bot/discord_io/`(규칙, `DiscordChat`, 클라이언트)다. `bot/__main__.py`는 설정 → 락 → DB → 러너 → 엔진 → Discord 순으로 연결한다. 아래는 목표 구조다 [제안].
 
 ```
 bot/
@@ -476,6 +482,7 @@ limits:
 - Python 3.11+, git, `gh`(인증), Xcode(시뮬레이터 런타임 포함), `claude`·`codex` CLI(구독 로그인)
 - 각 앱 저장소에서 CLI를 한 번 수동 실행해 폴더 신뢰·권한 질문 처리. 2026-10-10 시험 호출에서는 신뢰 처리하지 않은 임시 폴더에서도 `claude -p`, `codex exec`가 질문 없이 실행됐다. 실제 저장소에서 다시 확인한다
 - Discord: 비공개 서버, 포럼 채널, 봇 초대(Send Messages, Send Messages in Threads, Create Public Threads, Read Message History, Manage Webhooks, Manage Threads), Message Content Intent
+  - 초대 URL의 scope는 `bot`과 `applications.commands` 둘 다 (슬래시 명령 등록)
 - GitHub: 앱 저장소 Merge commit만 허용, head 브랜치 자동 삭제 켬 (트러블슈팅 2026-10-05 참고)
 
 ### 9.5 보안 [확정]
@@ -495,7 +502,7 @@ limits:
 | V2 | `codex exec`의 출력 스키마 지정·마지막 메시지 파일 출력 옵션 | `codex exec --help` | 5.2 | 확인 (2026-10-10, v0.161.0): `--output-schema`, `-o`, read-only 샌드박스 쓰기 차단 |
 | V3 | Claude 쓰기 단계의 허용·금지 도구 지정 방식 | 공식 문서, 시험 호출 | 5.2 권한 | 확인 (2026-10-10): `--allowedTools`·`--disallowedTools`·`--permission-mode`·`--permission-prompts none` |
 | V4 | Codex read-only 샌드박스에서 `xcodebuild` 실패 여부 | 시험 호출 | 1.7 (봇이 테스트 실행하는 근거) |  |
-| V5 | 웹훅 메시지의 silent(알림 억제) 지원 | 시험 게시 | 2.5 멘션 규칙 |  |
+| V5 | 웹훅 메시지의 silent(알림 억제) 지원 | 시험 게시 | 2.5 멘션 규칙 | API는 지원 (discord.py 2.7.1 `Webhook.send(silent=...)`). 실제 알림 억제는 첫 실행 때 확인 |
 | V6 | 개인 private 저장소에서 브랜치 보호(rulesets) 사용 가능 여부 | GitHub 설정 | 4.7 |  |
 | V7 | `gh` 인증 계정의 Issue·PR 쓰기 권한 | `gh auth status`, 시험 Issue | 1.8, 1.9 |  |
 | V8 | 볼트 루트가 git 저장소인지, iCloud 동기화 중 쓰기 안정성 | `git -C <볼트> status` | 3.10 |  |
@@ -548,7 +555,7 @@ limits:
 3. `feat/0-config` — `projects.yaml`, `.env` 로더, 단일 인스턴스 락. 진입점은 설정 로드와 락까지만 연결 (YAML은 PyYAML, `.env`는 직접 파싱: 2026-10-07 Zero 결정)
 4. 두 스레드로 나눴다 (2026-10-10 Zero 승인)
    - 4-1. `feat/0-opinion-engine` — `ChatIO` 인터페이스, 의견·반박 프롬프트, render, 멘션 규칙, OPINIONS 단계 엔진(병렬 호출, 형식 오류 재요청, /stop 취소). `/decide`는 결정 기록과 안내까지만(Issue·볼트·설계는 Phase 2) (2026-10-10 구현)
-   - 4-2. `feat/0-discord-io` — discord.py, 포럼 게시글 감지, Zero 외 입력 무시, 슬래시 명령, 웹훅 게시(V5), 운영 채널, 진입점 연결. 실제 `.env`·채널 ID 필요
+   - 4-2. `feat/0-discord-io` — discord.py, 포럼 게시글 감지, Zero 외 입력 무시, 슬래시 명령, 웹훅 게시(V5), 운영 채널, 진입점 연결, 재시작 복구. 실제 `.env`·채널 ID 필요 (2026-10-10 구현, 실제 서버 확인 전)
 5. `chore/0-launchd` — plist와 실행 문서 (Phase 3로 미뤄도 됨)
 
 ### 12.3 테스트 전략
