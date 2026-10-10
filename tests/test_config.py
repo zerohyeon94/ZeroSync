@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from bot.agents import Stage
 from bot.config import PACKAGE_DIR, ConfigError, load_config, parse_env
 
 EXAMPLE = PACKAGE_DIR / "projects.example.yaml"
@@ -244,3 +245,32 @@ def test_parse_env_rejects_bad_line_without_value():
 def test_parse_env_rejects_duplicate_key():
     with pytest.raises(ConfigError, match="A가 두 번"):
         parse_env("A=1\nA=2\n")
+
+
+# 단계별 모델
+
+
+def test_cli_models_by_stage(tmp_path):
+    extra = (
+        "cli:\n"
+        "  claude_models:\n    opinion: sonnet\n    implement: opus\n"
+        "  codex_models:\n    review: gpt-x\n"
+    )
+    config = load(tmp_path, yaml_text(extra=extra))
+    assert config.cli.claude_models == {Stage.OPINION: "sonnet", Stage.IMPLEMENT: "opus"}
+    assert config.cli.codex_models == {Stage.REVIEW: "gpt-x"}
+    assert load(tmp_path).cli.claude_models == {}
+
+
+@pytest.mark.parametrize(
+    ("extra", "match"),
+    [
+        ("cli:\n  claude_models:\n    review: opus\n", "Claude가 맡지 않는 단계: review"),
+        ("cli:\n  codex_models:\n    implement: gpt\n", "Codex가 맡지 않는 단계: implement"),
+        ("cli:\n  claude_models:\n    opinon: sonnet\n", "cli.claude_models"),
+        ("cli:\n  claude_models:\n    opinion: ''\n", "cli.claude_models"),
+    ],
+)
+def test_rejects_bad_cli_models(tmp_path, extra, match):
+    with pytest.raises(ConfigError, match=match):
+        load(tmp_path, yaml_text(extra=extra))

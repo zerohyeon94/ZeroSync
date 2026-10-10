@@ -40,6 +40,10 @@ class ProcessRunner:
         self._running: dict[str, asyncio.subprocess.Process] = {}
         self._cancel_requested: set[str] = set()
 
+    @property
+    def runs_dir(self) -> Path:
+        return self._runs_dir
+
     def is_running(self, run_id: str) -> bool:
         return run_id in self._running
 

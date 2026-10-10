@@ -191,6 +191,7 @@ class AgentRequest:
     mode: Literal["read_only", "write_worktree"]
     timeout_sec: int
     resume_session: str | None = None   # Claude 세션 이어가기 (최적화, 필수 아님)
+    output_schema: Mapping[str, Any] | None = None  # 응답 JSON 스키마. 주면 CLI 구조화 출력으로 강제
 
 @dataclass(frozen=True)
 class AgentResult:
@@ -205,23 +206,33 @@ class AgentResult:
 
 - 실제 구현: `ClaudeCliRunner`, `CodexCliRunner`. 테스트: `FakeAgentRunner`(정해 둔 응답을 돌려줌)
 - `status`는 종료 코드만으로 구분할 수 없는 타임아웃·취소를 나타낸다. 8장 `agent_runs.status`의 `running`·`invalid_output`은 저장 계층과 출력 검증이 정한다 (2026-10-07 Zero 승인으로 추가)
-- 구현됨: `bot/agents/base.py`(인터페이스), `bot/agents/process.py`(자식 프로세스 실행, 타임아웃·취소, 실행 로그), `bot/agents/fake.py`
+- 구현됨: `bot/agents/base.py`(인터페이스), `bot/agents/process.py`(자식 프로세스 실행, 타임아웃·취소, 실행 로그), `bot/agents/fake.py`, `bot/agents/claude.py`, `bot/agents/codex.py`
+- `output_schema`는 2026-10-10 추가 (Zero 결정: 스키마 강제 우선). 강제 출력도 `parse_agent_output`으로 다시 검증한다
 - 러너는 출력을 해석하지 않는다. JSON 추출과 검증은 `bot/schemas/extract.py`의 `parse_agent_output`가 한다 (구현됨)
 
-### 5.2 단계별 명령 [확정 + 검증 필요]
+### 5.2 단계별 명령 [확정, 2026-10-10 시험 호출로 확인]
 
 | 단계 | 에이전트 | 명령 골격 | 권한 |
 |---|---|---|---|
-| OPINION, DEBATE | Claude | `claude -p <prompt> --permission-mode plan` | 읽기 전용 |
-| OPINION, DEBATE, REVIEW | Codex | `codex exec --sandbox read-only <prompt>` | 읽기 전용 |
-| DESIGN | Claude | `claude -p <prompt>` + 쓰기 도구는 `docs/설계/`만 허용 | worktree의 docs만 |
-| IMPLEMENT, FIX | Claude | `claude -p <prompt>` (+ `--resume <세션ID>`) | 작업 worktree |
-| DOC_SYNC | Claude | `claude -p <prompt> --permission-mode plan` | 읽기 전용 (수정안은 JSON으로만) |
+| OPINION, DEBATE | Claude | `claude -p --permission-mode plan` | 읽기 전용 |
+| OPINION, DEBATE, REVIEW | Codex | `codex exec --cd <cwd> --sandbox read-only --ephemeral --ignore-user-config -o <runs>/<run_id>.last.txt -` | 읽기 전용 |
+| DESIGN | Claude | `claude -p --permission-mode dontAsk --allowedTools Read Glob Grep "Edit(docs/설계/**)" "Write(docs/설계/**)" <로컬 git>` | worktree의 docs만 |
+| IMPLEMENT, FIX | Claude | `claude -p --permission-mode acceptEdits --allowedTools Read Glob Grep Edit Write <로컬 git>` (+ `--resume <세션ID>`) | 작업 worktree |
+| DOC_SYNC | Claude | `claude -p --permission-mode plan` | 읽기 전용 (수정안은 JSON으로만) |
 
-- 구조화 출력 옵션(Claude의 JSON 출력·스키마 강제, Codex의 출력 스키마 지정)을 쓸 수 있으면 우선 사용하고, 없으면 프롬프트로 ```json 블록을 요청한다 (운영 규약 2.1) [검증 필요]
-- Claude의 쓰기 단계 권한은 허용 도구 목록으로 좁힌다. `git push`, 원격 관련 git 명령, `.env` 접근은 금지 목록에 넣는다 (운영 규약 1.3) [검증 필요: 정확한 옵션 이름과 동작]
+- Claude 공통: `--output-format json --permission-prompts none --strict-mcp-config --disallowedTools "Bash(git push:*)" "Bash(git pull:*)" "Bash(git fetch:*)" "Bash(git remote:*)" "Read(**/.env)" "Edit(**/.env)" "Write(**/.env)"`. `<로컬 git>`은 `Bash(git status|diff|log|show|add|commit:*)`
+  - `--permission-prompts none`: 허용 목록에 없어 승인이 필요한 동작은 자동 거부되고 결과 JSON의 `permission_denials`에 남는다. `ls` 같은 읽기 전용 명령은 목록에 없어도 실행된다
+  - `--strict-mcp-config`: 사용자 MCP 서버(Notion, Slack 등)를 불러오지 않는다. `--bare`는 OAuth 로그인을 읽지 않아 구독 로그인과 함께 쓸 수 없다
+- 프롬프트는 두 CLI 모두 stdin으로 넘긴다. 실행 로그의 argv에 프롬프트가 남지 않는다
+- 단계별 모델은 `projects.yaml`의 `cli.claude_models`·`cli.codex_models`로 정한다 (9.1, 2026-10-10 Zero 결정)
+- Codex는 쓰기 단계를 맡지 않으므로 러너가 쓰기 모드 요청을 거부한다
+
+- 구조화 출력: `AgentRequest.output_schema`가 있으면 Claude는 `--json-schema`, Codex는 `--output-schema <파일>`로 강제한다. 없으면 프롬프트로 ```json 블록을 요청한다 (운영 규약 2.1). pydantic `model_json_schema()` 결과를 두 CLI 모두 그대로 받는다 (확인됨)
+  - Claude 결과 JSON: `structured_output`(스키마 강제 시)을 우선하고, 없으면 `result` 문자열을 응답 본문으로 쓴다. `is_error: true`면 종료 코드가 0이어도 실패로 본다. 세션 ID는 `session_id`
+  - Codex: `-o` 파일의 마지막 메시지를 응답 본문으로 쓴다. 진행 기록은 stderr로 나와 실행 로그에만 남는다. 세션 ID는 쓰지 않는다(`--ephemeral`)
+- Claude의 쓰기 단계 권한은 허용 도구 목록으로 좁힌다. `git push`, 원격 관련 git 명령, `.env` 접근은 금지 목록에 넣는다 (운영 규약 1.3). 시험 호출에서 push, `.env` 읽기, 작업 폴더 밖 쓰기, 설계 단계의 `docs/설계/` 밖 쓰기가 모두 거부됨을 확인했다
 - 맥락은 매번 SQLite 기록으로 재구성해 프롬프트에 넣는다. 세션 이어가기는 실패해도 동작에 영향이 없어야 한다 (운영 규약 1.6)
-- PATH는 launchd 환경에서도 `claude`, `codex`를 찾도록 `projects.yaml`(또는 `.env`)에 절대 경로로 지정할 수 있게 한다 [제안]
+- PATH는 launchd 환경에서도 `claude`, `codex`를 찾도록 `projects.yaml`의 `cli.claude`·`cli.codex`에 절대 경로로 지정할 수 있다 (Homebrew 설치 시 `/opt/homebrew/bin/claude`, `/opt/homebrew/bin/codex`)
 
 ### 5.3 프롬프트 [제안]
 - 위치: `bot/prompts/<stage>.md` (템플릿 문자열). 코드에 긴 문자열을 넣지 않는다
@@ -292,7 +303,7 @@ class AgentResult:
 
 ## 7. 모듈 구조
 
-현재 develop에 있는 것은 `bot/__main__.py`(골격), `bot/schemas/`(구현), `bot/agents/`(인터페이스·프로세스 실행·가짜 러너), `bot/clock.py`, `bot/store/`(SQLite 스키마 v1·저장소), `bot/workflow/state.py`(상태 enum, OPINIONS 범위 전이), `bot/config.py`(설정 로더), `bot/locks.py`(단일 인스턴스 락), `bot/discord_io/`(빈 패키지)다. `bot/__main__.py`는 설정 로드와 락까지만 한다. 아래는 목표 구조다 [제안].
+현재 develop에 있는 것은 `bot/__main__.py`(골격), `bot/schemas/`(구현), `bot/agents/`(인터페이스·프로세스 실행·가짜 러너·Claude·Codex CLI 러너), `bot/clock.py`, `bot/store/`(SQLite 스키마 v1·저장소), `bot/workflow/state.py`(상태 enum, OPINIONS 범위 전이), `bot/config.py`(설정 로더), `bot/locks.py`(단일 인스턴스 락), `bot/discord_io/`(빈 패키지)다. `bot/__main__.py`는 설정 로드와 락까지만 한다. 아래는 목표 구조다 [제안].
 
 ```
 bot/
@@ -414,6 +425,11 @@ paths:
 cli:
   claude: claude        # launchd PATH 문제 시 절대 경로
   codex: codex
+  claude_models:        # 단계별 모델. 적지 않은 단계는 CLI 기본값 (2026-10-10 Zero 결정)
+    opinion: sonnet
+    design: opus
+  codex_models:         # opinion, debate, review만
+    review: <모델>
 
 limits:
   max_review_rounds: 3
@@ -454,7 +470,7 @@ limits:
 
 ### 9.4 사전 준비 체크리스트
 - Python 3.11+, git, `gh`(인증), Xcode(시뮬레이터 런타임 포함), `claude`·`codex` CLI(구독 로그인)
-- 각 앱 저장소에서 CLI를 한 번 수동 실행해 폴더 신뢰·권한 질문 처리
+- 각 앱 저장소에서 CLI를 한 번 수동 실행해 폴더 신뢰·권한 질문 처리. 2026-10-10 시험 호출에서는 신뢰 처리하지 않은 임시 폴더에서도 `claude -p`, `codex exec`가 질문 없이 실행됐다. 실제 저장소에서 다시 확인한다
 - Discord: 비공개 서버, 포럼 채널, 봇 초대(Send Messages, Send Messages in Threads, Create Public Threads, Read Message History, Manage Webhooks, Manage Threads), Message Content Intent
 - GitHub: 앱 저장소 Merge commit만 허용, head 브랜치 자동 삭제 켬 (트러블슈팅 2026-10-05 참고)
 
@@ -469,18 +485,18 @@ limits:
 
 맥에서 Claude Code로 개발을 시작하기 전후에 확인한다. 결과는 개발 일지와 이 절에 기록한다.
 
-| # | 항목 | 확인 방법 | 영향 |
-|---|---|---|---|
-| V1 | `claude -p`의 JSON 출력·스키마 강제 옵션, 세션 ID 반환 | `claude --help`, 짧은 호출 | 5.2, 2.1 |
-| V2 | `codex exec`의 출력 스키마 지정·마지막 메시지 파일 출력 옵션 | `codex exec --help` | 5.2 |
-| V3 | Claude 쓰기 단계의 허용·금지 도구 지정 방식 | 공식 문서, 시험 호출 | 5.2 권한 |
-| V4 | Codex read-only 샌드박스에서 `xcodebuild` 실패 여부 | 시험 호출 | 1.7 (봇이 테스트 실행하는 근거) |
-| V5 | 웹훅 메시지의 silent(알림 억제) 지원 | 시험 게시 | 2.5 멘션 규칙 |
-| V6 | 개인 private 저장소에서 브랜치 보호(rulesets) 사용 가능 여부 | GitHub 설정 | 4.7 |
-| V7 | `gh` 인증 계정의 Issue·PR 쓰기 권한 | `gh auth status`, 시험 Issue | 1.8, 1.9 |
-| V8 | 볼트 루트가 git 저장소인지, iCloud 동기화 중 쓰기 안정성 | `git -C <볼트> status` | 3.10 |
-| V9 | xcodebuild CoreDevice 오류(`_XPCTypeBool`) 해결 | `xcodebuild test` | 1.7 전체. Phase 4 차단 요인 |
-| V10 | launchd 환경에서 CLI 실행(PATH, 키체인 접근) | plist로 시험 실행 | 9.3 |
+| # | 항목 | 확인 방법 | 영향 | 결과 |
+|---|---|---|---|---|
+| V1 | `claude -p`의 JSON 출력·스키마 강제 옵션, 세션 ID 반환 | `claude --help`, 짧은 호출 | 5.2, 2.1 | 확인 (2026-10-10, v2.1.285): `--output-format json`, `--json-schema`, `session_id`, `--resume` 동작 |
+| V2 | `codex exec`의 출력 스키마 지정·마지막 메시지 파일 출력 옵션 | `codex exec --help` | 5.2 | 확인 (2026-10-10, v0.161.0): `--output-schema`, `-o`, read-only 샌드박스 쓰기 차단 |
+| V3 | Claude 쓰기 단계의 허용·금지 도구 지정 방식 | 공식 문서, 시험 호출 | 5.2 권한 | 확인 (2026-10-10): `--allowedTools`·`--disallowedTools`·`--permission-mode`·`--permission-prompts none` |
+| V4 | Codex read-only 샌드박스에서 `xcodebuild` 실패 여부 | 시험 호출 | 1.7 (봇이 테스트 실행하는 근거) |  |
+| V5 | 웹훅 메시지의 silent(알림 억제) 지원 | 시험 게시 | 2.5 멘션 규칙 |  |
+| V6 | 개인 private 저장소에서 브랜치 보호(rulesets) 사용 가능 여부 | GitHub 설정 | 4.7 |  |
+| V7 | `gh` 인증 계정의 Issue·PR 쓰기 권한 | `gh auth status`, 시험 Issue | 1.8, 1.9 |  |
+| V8 | 볼트 루트가 git 저장소인지, iCloud 동기화 중 쓰기 안정성 | `git -C <볼트> status` | 3.10 |  |
+| V9 | xcodebuild CoreDevice 오류(`_XPCTypeBool`) 해결 | `xcodebuild test` | 1.7 전체. Phase 4 차단 요인 |  |
+| V10 | launchd 환경에서 CLI 실행(PATH, 키체인 접근) | plist로 시험 실행 | 9.3 |  |
 
 ---
 
@@ -523,7 +539,7 @@ limits:
 
 1. `feat/0-agent-runner` — `AgentRunner` 인터페이스, `FakeAgentRunner`, 자식 프로세스 실행(타임아웃·취소, 실행 로그 저장)
    - CLI 러너는 CLI 설치 후 별도 스레드로 분리했다 (2026-10-07 Zero 승인): 이 맥에 `claude`·`codex`가 없어 V1~V3을 확인할 수 없었다
-1-2. `feat/0-cli-runners` — `ClaudeCliRunner`·`CodexCliRunner`. V1~V3 확인 후 명령 형식 결정. 실제 CLI 호출은 수동 스모크 스크립트로만 확인
+1-2. `feat/0-cli-runners` — `ClaudeCliRunner`·`CodexCliRunner`. V1~V3 확인 후 명령 형식 결정. 실제 CLI 호출은 수동 스모크 스크립트(`scripts/smoke_cli.py`)로만 확인 (2026-10-10 구현)
 2. `feat/0-store-state` — SQLite 스키마·저장소, 상태 enum과 OPINIONS 범위의 전이 규칙 (`/decide` → DESIGNING, 모든 상태의 `/stop` 포함). 효과는 타입만 정의하고 실행은 엔진 스레드에서
 3. `feat/0-config` — `projects.yaml`, `.env` 로더, 단일 인스턴스 락. 진입점은 설정 로드와 락까지만 연결 (YAML은 PyYAML, `.env`는 직접 파싱: 2026-10-07 Zero 결정)
 4. `feat/0-discord-opinions` — `ChatIO`, 포럼 게시글 감지, 의견 프롬프트, 병렬 호출, render, 웹훅 게시, 멘션 규칙

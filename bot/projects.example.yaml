@@ -24,8 +24,19 @@ paths:
 
 # 생략하면 기본값을 쓴다
 cli:
-  claude: claude        # launchd PATH에서 못 찾으면 절대 경로
+  claude: claude        # launchd PATH에서 못 찾으면 절대 경로 (예: /opt/homebrew/bin/claude)
   codex: codex
+  # 단계별 모델. 적지 않은 단계는 각 CLI의 기본 모델을 쓴다
+  # Claude 단계: opinion, debate, design, implement, fix, doc_sync
+  claude_models:
+    opinion: sonnet
+    debate: sonnet
+    doc_sync: sonnet
+    design: opus
+    implement: opus
+    fix: opus
+  # Codex 단계: opinion, debate, review
+  codex_models: {}
 
 limits:
   max_review_rounds: 3
