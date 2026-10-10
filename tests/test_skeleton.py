@@ -44,9 +44,18 @@ def write_projects(tmp_path):
     return path
 
 
-def run_main(tmp_path, environ=ENV):
+def run_main(tmp_path, environ=ENV, run=None):
+    async def fake_run(config):
+        # 봇이 실행되는 동안 락을 쥐고 있어야 한다
+        lock = config.paths.lock
+        assert lock.exists() and lock.read_text().strip()
+
     return main(
-        [], projects_path=write_projects(tmp_path), env_path=tmp_path / ".env", environ=environ
+        [],
+        projects_path=write_projects(tmp_path),
+        env_path=tmp_path / ".env",
+        environ=environ,
+        run=run or fake_run,
     )
 
 
@@ -79,3 +88,15 @@ def test_importing_bot_does_not_load_discord_io():
         [sys.executable, "-c", code], capture_output=True, text=True, check=True
     )
     assert result.stdout.strip() == "False"
+
+
+def test_main_reports_run_error_without_token(tmp_path, capsys):
+    async def failing_run(config):
+        raise RuntimeError("로그인 실패")
+
+    assert run_main(tmp_path, run=failing_run) == 1
+    err = capsys.readouterr().err
+    assert "실행 오류: RuntimeError: 로그인 실패" in err
+    assert "token-secret-value" not in err
+    # 실패해도 락은 풀린다
+    assert run_main(tmp_path) == 0

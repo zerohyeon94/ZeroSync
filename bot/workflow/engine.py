@@ -161,6 +161,55 @@ class Engine:
             return
         await self._run_effects(task, result.effects)
 
+    async def recover_interrupted(self) -> None:
+        """재시작 전에 끝나지 않은 에이전트 실행을 정리한다 (SPEC 3.4, Q8).
+
+        중간 결과는 신뢰하지 않는다. OPINIONS는 실패 안내 후 그대로 두고(다시 질문하면 재요청),
+        그 밖의 진행 중 단계는 NEEDS_HUMAN으로 보낸다 (2026-10-10 Zero 결정).
+        """
+        by_task: dict[int, list[str]] = {}
+        for run in await self._repo.list_running_agent_runs():
+            await self._repo.finish_agent_run(
+                run.id, status=RunStatus.ERROR, exit_code=None, log_path=run.log_path
+            )
+            by_task.setdefault(run.task_id, []).append(run.agent)
+
+        for task_id, agents in by_task.items():
+            task = await self._repo.get_task(task_id)
+            if task.state.is_terminal:
+                continue
+            if task.state is TaskState.OPINIONS:
+                names = ", ".join(DISPLAY_NAMES[agent] for agent in sorted(set(agents)))
+                await self._repo.add_event(
+                    task.id,
+                    NewEvent(Actor.BOT, EventKind.ERROR, {"reason": "restart", "agents": agents}),
+                )
+                await self._chat.post(
+                    task.discord_thread,
+                    "bot",
+                    render_notice(NoticeCode.AGENT_FAILED, f"[{names}] 봇 재시작으로 중단"),
+                    mention=should_mention(Moment.OPINIONS_READY),
+                )
+            else:
+                await self._repo.apply_transition(
+                    task.id,
+                    expected_state=task.state,
+                    new_state=TaskState.NEEDS_HUMAN,
+                    event=NewEvent(Actor.BOT, EventKind.ERROR, {"reason": "restart"}),
+                    updates={"prev_state": task.state},
+                )
+                await self._chat.post(
+                    task.discord_thread,
+                    "bot",
+                    render_notice(NoticeCode.INTERRUPTED),
+                    mention=should_mention(Moment.NEEDS_HUMAN),
+                )
+            await self._chat.notify_ops(
+                f"[{task.project}] 작업 {task.id}: 봇 재시작으로 실행 {len(agents)}건을 중단했다 "
+                f"(상태 {task.state})",
+                mention=should_mention(Moment.BOT_ERROR),
+            )
+
     # 효과
 
     async def _run_effects(self, task: TaskRecord, effects: Sequence[Effect]) -> None:

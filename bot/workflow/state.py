@@ -169,6 +169,7 @@ class NoticeCode(StrEnum):
     DECISION_RECORDED = "decision_recorded"
     AGENT_FAILED = "agent_failed"
     NOT_IMPLEMENTED = "not_implemented"
+    INTERRUPTED = "interrupted"
 
 
 @dataclass(frozen=True)
