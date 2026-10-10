@@ -48,7 +48,7 @@ SPEC.md와 운영 규약이 다르면 운영 규약을 따른다.
 | 에이전트 출력 스키마 (의견, 리뷰 판정) | 완료 |
 | 설계 요약 스키마 (change_type, target_feature, slug) | 완료 (나머지 필드는 SPEC 5.4대로 추가 예정) |
 | 에이전트 호출 인터페이스·프로세스 실행 (`bot/agents/`) | 완료 |
-| CLI 러너 (`ClaudeCliRunner`·`CodexCliRunner`) | 미시작 (CLI 설치 필요) |
+| CLI 러너 (`ClaudeCliRunner`·`CodexCliRunner`) | 완료 (SPEC V1~V3 확인) |
 | SQLite 저장소·상태 머신 (OPINIONS 범위) | 완료 |
 | 설정 로더·단일 인스턴스 락 | 완료 |
 | Discord 의견 게시, 엔진 | 미시작 |
