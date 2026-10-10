@@ -28,6 +28,8 @@ ZeroSync는 Discord 기반 멀티 에이전트 오케스트레이터(v2)다. Zer
 | `bot/store/` | SQLite 연결·스키마 버전 관리, tasks·events·agent_runs 저장소 | 구현 |
 | `bot/workflow/` | 상태 enum과 전이 규칙(순수 함수). discord.py를 import하지 않는다 | OPINIONS 범위 구현 |
 | `bot/clock.py` | 현재 시각 인터페이스 (테스트에서 고정) | 구현 |
+| `bot/config.py` | `bot/projects.yaml` + `.env` 로더 (pydantic 검증). 예시는 `bot/projects.example.yaml`, `.env.example` | 구현 |
+| `bot/locks.py` | 단일 인스턴스 락 (`flock`) | 구현 (빌드 락은 Phase 2) |
 | `bot/discord_io/` | Discord 입출력 계층. 워크플로 로직은 이 계층 밖에 둔다 | 골격 |
 | `tests/` | pytest 테스트 | 골격 |
 | `menubar/` | v1 Swift 메뉴바 앱 (`ZeroSync/`, `ZeroSync.xcodeproj`, 테스트 타깃) | 보류 |
