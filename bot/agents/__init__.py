@@ -1,7 +1,4 @@
-"""에이전트 호출 계층 (SPEC 5).
-
-CLI 러너(ClaudeCliRunner, CodexCliRunner)는 CLI 옵션 확인(SPEC 10장 V1~V3) 후 추가한다.
-"""
+"""에이전트 호출 계층 (SPEC 5)."""
 
 from bot.agents.base import (
     AgentName,
@@ -12,6 +9,8 @@ from bot.agents.base import (
     RunStatus,
     Stage,
 )
+from bot.agents.claude import ClaudeCliRunner
+from bot.agents.codex import CodexCliRunner
 from bot.agents.fake import FakeAgentRunner
 from bot.agents.process import ProcessResult, ProcessRunner
 
@@ -20,6 +19,8 @@ __all__ = [
     "AgentRequest",
     "AgentResult",
     "AgentRunner",
+    "ClaudeCliRunner",
+    "CodexCliRunner",
     "FakeAgentRunner",
     "Mode",
     "ProcessResult",

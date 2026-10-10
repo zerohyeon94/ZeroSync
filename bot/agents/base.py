@@ -4,10 +4,11 @@
 JSON 추출과 검증은 bot.schemas.parse_agent_output이 한다.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 AgentName = Literal["claude", "codex"]
 Mode = Literal["read_only", "write_worktree"]
@@ -45,6 +46,8 @@ class AgentRequest:
     mode: Mode
     timeout_sec: float
     resume_session: str | None = None  # Claude 세션 이어가기 (최적화, 필수 아님)
+    # 응답 JSON 스키마. 주면 CLI의 구조화 출력으로 강제한다 (운영 규약 2.1, SPEC 5.2)
+    output_schema: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)

@@ -25,6 +25,8 @@ from pydantic import (
     model_validator,
 )
 
+from bot.agents.base import Stage
+
 PACKAGE_DIR = Path(__file__).resolve().parent
 DEFAULT_PROJECTS_PATH = PACKAGE_DIR / "projects.yaml"
 DEFAULT_ENV_PATH = PACKAGE_DIR.parent / ".env"
@@ -102,10 +104,39 @@ class PathsConfig(_Model):
         return self.db.parent / "bot.lock"
 
 
+ModelName = Annotated[str, Field(min_length=1)]
+
+# 단계별 담당 (SPEC 5.2). Codex는 읽기 전용 단계만 맡는다
+CLAUDE_STAGES = frozenset(Stage) - {Stage.REVIEW}
+CODEX_STAGES = frozenset({Stage.OPINION, Stage.DEBATE, Stage.REVIEW})
+
+
 class CliConfig(_Model):
     # launchd PATH에서 못 찾으면 절대 경로를 적는다 (SPEC 5.2)
     claude: str = Field(default="claude", min_length=1)
     codex: str = Field(default="codex", min_length=1)
+    # 단계별 모델. 적지 않은 단계는 각 CLI의 기본 모델을 쓴다
+    claude_models: dict[Stage, ModelName] = {}
+    codex_models: dict[Stage, ModelName] = {}
+
+    @field_validator("claude_models")
+    @classmethod
+    def _claude_stages(cls, value: dict[Stage, str]) -> dict[Stage, str]:
+        return _check_stages(value, CLAUDE_STAGES, "Claude")
+
+    @field_validator("codex_models")
+    @classmethod
+    def _codex_stages(cls, value: dict[Stage, str]) -> dict[Stage, str]:
+        return _check_stages(value, CODEX_STAGES, "Codex")
+
+
+def _check_stages(
+    value: dict[Stage, str], allowed: frozenset[Stage], agent: str
+) -> dict[Stage, str]:
+    extra = sorted(stage.value for stage in value if stage not in allowed)
+    if extra:
+        raise ValueError(f"{agent}가 맡지 않는 단계: {', '.join(extra)}")
+    return value
 
 
 class LimitsConfig(_Model):
