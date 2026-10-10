@@ -51,7 +51,8 @@ SPEC.md와 운영 규약이 다르면 운영 규약을 따른다.
 | CLI 러너 (`ClaudeCliRunner`·`CodexCliRunner`) | 완료 (SPEC V1~V3 확인) |
 | SQLite 저장소·상태 머신 (OPINIONS 범위) | 완료 |
 | 설정 로더·단일 인스턴스 락 | 완료 |
-| Discord 의견 게시, 엔진 | 미시작 |
+| OPINIONS 단계 엔진 (프롬프트, render, 멘션 규칙) | 완료 |
+| Discord 연결 (`bot/discord_io/`) | 미시작 |
 
 ---
 

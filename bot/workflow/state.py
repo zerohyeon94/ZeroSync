@@ -165,6 +165,10 @@ class NoticeCode(StrEnum):
     AWAITING_DECISION = "awaiting_decision"
     STOPPED = "stopped"
     REJECTED = "rejected"
+    # 아래는 전이가 아니라 엔진이 효과를 실행하면서 남기는 안내다
+    DECISION_RECORDED = "decision_recorded"
+    AGENT_FAILED = "agent_failed"
+    NOT_IMPLEMENTED = "not_implemented"
 
 
 @dataclass(frozen=True)
