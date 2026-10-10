@@ -134,7 +134,7 @@ launchd (LaunchAgent, 로그인 사용자 세션)
 |---|---|---|
 | 리뷰 라운드 | 3회 초과 시 NEEDS_HUMAN | 운영 규약 1.7, 2.5 |
 | 테스트 실패 재시도 | 2회 초과 시 NEEDS_HUMAN | 운영 규약 1.7, Q2 [확정] |
-| 형식 오류 | 재요청 1회 후에도 실패하면 원문 게시 + NEEDS_HUMAN | 운영 규약 2.1, 2.5 |
+| 형식 오류 | 재요청 1회 후에도 실패하면 원문 게시 + NEEDS_HUMAN. OPINIONS(의견·반박)는 원문을 "형식 오류" 표시와 함께 게시하고 멘션한 뒤 OPINIONS를 유지한다 [확정] (2026-10-10 Zero 결정) | 운영 규약 2.1, 2.5 |
 | CLI 타임아웃 | 3,600초 | `projects.yaml`의 `cli_timeout_sec` |
 | OPINIONS 질문 수 | 제한 없음. 5회 초과 시 "/decide 대기 중" 한 줄 알림 (넘는 순간 1회). 처음 게시글과 `/debate`는 세지 않고, 게시글 뒤 Zero의 일반 메시지와 `@claude`/`@codex` 메시지만 1회씩 센다 [확정] (2026-10-07) | 운영 규약 1.6 |
 | 재멘션 | Zero 대기 24시간 초과 시 1회 | 운영 규약 2.5 |
@@ -235,7 +235,8 @@ class AgentResult:
 - PATH는 launchd 환경에서도 `claude`, `codex`를 찾도록 `projects.yaml`의 `cli.claude`·`cli.codex`에 절대 경로로 지정할 수 있다 (Homebrew 설치 시 `/opt/homebrew/bin/claude`, `/opt/homebrew/bin/codex`)
 
 ### 5.3 프롬프트 [제안]
-- 위치: `bot/prompts/<stage>.md` (템플릿 문자열). 코드에 긴 문자열을 넣지 않는다
+- 위치: `bot/prompts/<stage>.md` (템플릿 문자열, `string.Template`의 `$이름`). 코드에 긴 문자열을 넣지 않는다
+- 구현됨: `opinion.md`, `debate.md` (2026-10-10). 스냅샷은 `tests/snapshots/`
 - 공통 구성: 인격과 관점(운영 규약 1.2, 1.4) → 작업 맥락(제목, 원문, 결정 원문, 이전 출력) → 단계별 지시 → 출력 스키마(`Model.model_json_schema()`로 생성) → 금지 사항
 - 첫 의견은 상대 의견을 넣지 않는다. 두 번째 질문부터 게시글 전체 흐름을 넣는다 (운영 규약 1.6)
 - 프롬프트 렌더링은 순수 함수로 두고 스냅샷 테스트로 고정한다
@@ -274,7 +275,9 @@ class AgentResult:
 ## 6. 외부 연동
 
 ### 6.1 Discord (`bot/discord_io/`)
-- 워크플로는 `ChatIO` 인터페이스만 안다: `post(thread, author, text, *, mention, attachments)`, `set_tags(thread, tags)`, `notify_ops(text)` [제안]
+- 워크플로는 `ChatIO` 인터페이스만 안다: `post(thread, author, text, *, mention, attachments) -> 메시지 ID`, `notify_ops(text, *, mention)`. 인터페이스는 `bot/workflow/chat.py`에 두고 `bot/discord_io/`가 구현한다 (의존 방향, 7장). `set_tags`는 태그 이름이 정해지면 추가한다 [제안]
+- `mention=False`면 알림 없는 메시지로 보낸다. 멘션 문자열(`<@Zero ID>`)과 1,900자 분할은 구현 쪽 책임이다
+- 의견·반박은 두 에이전트 응답이 모두 끝난 뒤 Beta, Alpha 순서로 게시하고, 마지막 게시에서 멘션한다. 실행 실패한 쪽은 그 자리에 [ZeroSync] 안내를 게시하고 #zerosync-ops에 알린다 (2026-10-10 구현)
 - 게시 이름: `[Beta · Claude]`, `[Alpha · Codex]`, `[ZeroSync]`(운영 규약 1.2). 에이전트 메시지는 웹훅의 username 지정으로 게시한다
 - 웹훅은 봇이 시작할 때 각 포럼 채널에서 찾거나 만든다(Manage Webhooks 권한). 웹훅 URL을 `.env`에 두지 않는다 [확정] (Q6)
 - 멘션은 이벤트 종류의 `ACTION_REQUIRED` 집합으로만 결정한다. 나머지는 silent 메시지 (운영 규약 2.5) [검증 필요: 웹훅 silent]
@@ -303,7 +306,7 @@ class AgentResult:
 
 ## 7. 모듈 구조
 
-현재 develop에 있는 것은 `bot/__main__.py`(골격), `bot/schemas/`(구현), `bot/agents/`(인터페이스·프로세스 실행·가짜 러너·Claude·Codex CLI 러너), `bot/clock.py`, `bot/store/`(SQLite 스키마 v1·저장소), `bot/workflow/state.py`(상태 enum, OPINIONS 범위 전이), `bot/config.py`(설정 로더), `bot/locks.py`(단일 인스턴스 락), `bot/discord_io/`(빈 패키지)다. `bot/__main__.py`는 설정 로드와 락까지만 한다. 아래는 목표 구조다 [제안].
+현재 develop에 있는 것은 `bot/__main__.py`(골격), `bot/schemas/`(구현), `bot/agents/`(인터페이스·프로세스 실행·가짜 러너·Claude·Codex CLI 러너), `bot/clock.py`, `bot/store/`(SQLite 스키마 v1·저장소), `bot/workflow/`(상태 enum과 OPINIONS 범위 전이, ChatIO 인터페이스, 멘션 규칙, OPINIONS 단계 엔진), `bot/prompts/`(의견·반박), `bot/render/`(의견·안내), `bot/config.py`(설정 로더), `bot/locks.py`(단일 인스턴스 락), `bot/discord_io/`(빈 패키지)다. `bot/__main__.py`는 설정 로드와 락까지만 한다. 아래는 목표 구조다 [제안].
 
 ```
 bot/
@@ -320,6 +323,7 @@ bot/
   workflow/
     state.py           # 상태 enum, 이벤트, 전이 규칙 (순수 함수)
     engine.py          # 효과 실행, 한도 관리
+    chat.py            # ChatIO 인터페이스, 테스트용 FakeChatIO
     mentions.py        # ACTION_REQUIRED 집합, 재멘션 판정
   store/
     db.py              # SQLite 연결, 마이그레이션
@@ -542,7 +546,9 @@ limits:
 1-2. `feat/0-cli-runners` — `ClaudeCliRunner`·`CodexCliRunner`. V1~V3 확인 후 명령 형식 결정. 실제 CLI 호출은 수동 스모크 스크립트(`scripts/smoke_cli.py`)로만 확인 (2026-10-10 구현)
 2. `feat/0-store-state` — SQLite 스키마·저장소, 상태 enum과 OPINIONS 범위의 전이 규칙 (`/decide` → DESIGNING, 모든 상태의 `/stop` 포함). 효과는 타입만 정의하고 실행은 엔진 스레드에서
 3. `feat/0-config` — `projects.yaml`, `.env` 로더, 단일 인스턴스 락. 진입점은 설정 로드와 락까지만 연결 (YAML은 PyYAML, `.env`는 직접 파싱: 2026-10-07 Zero 결정)
-4. `feat/0-discord-opinions` — `ChatIO`, 포럼 게시글 감지, 의견 프롬프트, 병렬 호출, render, 웹훅 게시, 멘션 규칙
+4. 두 스레드로 나눴다 (2026-10-10 Zero 승인)
+   - 4-1. `feat/0-opinion-engine` — `ChatIO` 인터페이스, 의견·반박 프롬프트, render, 멘션 규칙, OPINIONS 단계 엔진(병렬 호출, 형식 오류 재요청, /stop 취소). `/decide`는 결정 기록과 안내까지만(Issue·볼트·설계는 Phase 2) (2026-10-10 구현)
+   - 4-2. `feat/0-discord-io` — discord.py, 포럼 게시글 감지, Zero 외 입력 무시, 슬래시 명령, 웹훅 게시(V5), 운영 채널, 진입점 연결. 실제 `.env`·채널 ID 필요
 5. `chore/0-launchd` — plist와 실행 문서 (Phase 3로 미뤄도 됨)
 
 ### 12.3 테스트 전략
