@@ -5,9 +5,11 @@ from pydantic import ValidationError
 
 from bot.schemas import (
     FEATURE_NAMES,
+    ISSUE_NUMBER,
     AgentOutputError,
     ChangeType,
     DesignSummary,
+    ImplementationReport,
     parse_agent_output,
 )
 
@@ -15,8 +17,21 @@ FEATURES = {"예산 배너", "지출 기록"}
 
 
 def design_data(**overrides):
-    data = {"change_type": "feature_change", "target_feature": "예산 배너", "slug": "budget-banner"}
+    data = {
+        "change_type": "feature_change",
+        "target_feature": "예산 배너",
+        "slug": "budget-banner",
+        "title": "월 예산 초과 시 홈 화면 배너 표시",
+        "scope": "budget",
+        "summary": "홈 화면에 초과 배너를 띄운다",
+        "changes": ["HomeView에 배너 추가"],
+        "test_plan": ["초과·미초과 경계 테스트"],
+        "risks": [],
+        "design_doc": "docs/설계/42-budget-banner.md",
+    }
     data.update(overrides)
+    if "slug" in overrides and "design_doc" not in overrides:
+        data["design_doc"] = f"docs/설계/42-{overrides['slug']}.md"
     return data
 
 
@@ -130,3 +145,74 @@ def test_parse_agent_output_passes_feature_context():
     with pytest.raises(AgentOutputError, match="기능/ 폴더에 없다"):
         parse_agent_output(text, DesignSummary, context={FEATURE_NAMES: FEATURES})
     assert parse_agent_output(text, DesignSummary).target_feature == "없는 기능"
+
+
+# SPEC 5.4 추가 필드 (Q1)
+
+
+def test_full_design_summary_and_conventional_title():
+    summary = validate(design_data())
+    assert summary.conventional_title == "feat(budget): 월 예산 초과 시 홈 화면 배너 표시"
+    no_scope = validate(design_data(scope=None, change_type="bug_fix"))
+    assert no_scope.conventional_title == "fix: 월 예산 초과 시 홈 화면 배너 표시"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"title": "두 줄\n제목"},
+        {"title": "가" * 81},
+        {"scope": "Budget"},
+        {"summary": "가" * 501},
+        {"changes": []},
+        {"changes": ["가"] * 9},
+        {"test_plan": []},
+        {"risks": ["가"] * 4},
+        {"design_doc": "docs/42-budget-banner.md"},
+        {"design_doc": "docs/설계/42-other-name.md"},
+    ],
+)
+def test_rejects_invalid_added_fields(overrides):
+    with pytest.raises(ValidationError):
+        validate(design_data(**overrides))
+
+
+def test_design_doc_must_match_issue_number_from_context():
+    data = design_data()
+    context = {FEATURE_NAMES: FEATURES, ISSUE_NUMBER: 42}
+    assert DesignSummary.model_validate(data, context=context).design_doc.endswith(
+        "42-budget-banner.md"
+    )
+    with pytest.raises(ValidationError, match="docs/설계/7-budget-banner.md"):
+        DesignSummary.model_validate(data, context={ISSUE_NUMBER: 7})
+
+
+# 구현 보고
+
+
+def test_implementation_report():
+    report = ImplementationReport.model_validate(
+        {
+            "changes_summary": "배너 추가",
+            "design_intent": "홈에서 바로 보이게",
+            "check_points": ["경계 시각"],
+            "responses": [
+                {"index": 1, "action": "fixed", "note": "고쳤다"},
+                {"index": 2, "action": "declined", "note": "범위 밖"},
+            ],
+        }
+    )
+    assert [r.action.label for r in report.responses] == ["반영", "반영 안 함"]
+    with pytest.raises(ValidationError, match="겹친다"):
+        ImplementationReport.model_validate(
+            {
+                "changes_summary": "a",
+                "design_intent": "b",
+                "responses": [
+                    {"index": 1, "action": "fixed", "note": "x"},
+                    {"index": 1, "action": "declined", "note": "y"},
+                ],
+            }
+        )
+    with pytest.raises(ValidationError):
+        ImplementationReport.model_validate({"changes_summary": "", "design_intent": "b"})

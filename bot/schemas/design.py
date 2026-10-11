@@ -1,11 +1,12 @@
-"""설계 요약 스키마 (운영 규약 3.8, 4.2).
+"""설계 요약 스키마 (운영 규약 3.3, 3.8, 4.2, SPEC 5.4).
 
-DESIGN 단계에서 Beta(Claude)가 출력하는 설계 요약 JSON 중 규약에 정해진 세 필드만 다룬다.
-요약 본문 등 나머지 필드는 SPEC.md가 정해지면 추가한다.
+DESIGN 단계에서 Beta(Claude)가 출력하는 설계 요약 JSON이다.
+target_feature가 실제 `기능/` 폴더의 파일인지, design_doc이 Issue 번호와 slug에 맞는지는
+검증 컨텍스트로 확인한다.
 
-target_feature가 실제 `기능/` 폴더의 파일인지는 검증 컨텍스트로 확인한다.
-
-    DesignSummary.model_validate(data, context={FEATURE_NAMES: {"예산 배너", ...}})
+    DesignSummary.model_validate(
+        data, context={FEATURE_NAMES: {"예산 배너", ...}, ISSUE_NUMBER: 42}
+    )
 
 컨텍스트가 없으면 형식만 검사한다.
 """
@@ -17,19 +18,34 @@ from typing import Annotated, Self
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Field,
     StringConstraints,
     ValidationInfo,
     field_validator,
     model_validator,
 )
 
+from bot.schemas._types import Item
+
 # 검증 컨텍스트 키: 대상 프로젝트 `기능/` 폴더의 파일 이름 집합 (확장자 .md 제외)
 FEATURE_NAMES = "feature_names"
+# 검증 컨텍스트 키: 이 작업의 GitHub Issue 번호 (design_doc 경로 확인)
+ISSUE_NUMBER = "issue_number"
 
 # 운영 규약 4.7 push 보호 정규식
 BRANCH_NAME_PATTERN = re.compile(r"^(feat|fix|refactor)/\d+-[a-z0-9]+(-[a-z0-9]+)*$")
 
 Slug = Annotated[str, StringConstraints(max_length=40, pattern=r"^[a-z0-9]+(-[a-z0-9]+){0,4}$")]
+Title = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=80, pattern=r"^[^\r\n]+$"),
+]
+# 커밋·PR 제목의 영역 (운영 규약 4.4). 애매하면 null
+Scope = Annotated[str, StringConstraints(max_length=20, pattern=r"^[a-z][a-z0-9-]*$")]
+DesignText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
+DesignDoc = Annotated[
+    str, StringConstraints(pattern=r"^docs/설계/\d+-[a-z0-9]+(-[a-z0-9]+){0,4}\.md$")
+]
 FeatureName = Annotated[
     str,
     StringConstraints(
@@ -74,11 +90,27 @@ class DesignSummary(BaseModel):
     change_type: ChangeType
     target_feature: FeatureName
     slug: Slug
+    title: Title
+    scope: Scope | None = None
+    summary: DesignText
+    changes: list[Item] = Field(min_length=1, max_length=8)
+    test_plan: list[Item] = Field(min_length=1, max_length=6)
+    risks: list[Item] = Field(default_factory=list, max_length=3)
+    design_doc: DesignDoc
 
     @field_validator("target_feature")
     @classmethod
     def _strip_md_extension(cls, value: str) -> str:
         return value.removesuffix(".md")
+
+    @model_validator(mode="after")
+    def _design_doc_matches(self, info: ValidationInfo) -> Self:
+        issue = (info.context or {}).get(ISSUE_NUMBER)
+        if not self.design_doc.endswith(f"-{self.slug}.md"):
+            raise ValueError(f"design_doc은 slug와 같은 이름이어야 한다: ...-{self.slug}.md")
+        if issue is not None and self.design_doc != f"docs/설계/{issue}-{self.slug}.md":
+            raise ValueError(f"design_doc은 docs/설계/{issue}-{self.slug}.md 이어야 한다")
+        return self
 
     @model_validator(mode="after")
     def _target_feature_matches_folder(self, info: ValidationInfo) -> Self:
@@ -97,6 +129,12 @@ class DesignSummary(BaseModel):
                 f"'{self.target_feature}'가 기능/ 폴더에 없다. 전달받은 목록의 이름을 써야 한다"
             )
         return self
+
+    @property
+    def conventional_title(self) -> str:
+        """커밋·PR 제목 `<type>(<영역>): <요약>` (운영 규약 4.4, 4.5)."""
+        scope = f"({self.scope})" if self.scope else ""
+        return f"{self.change_type.branch_type}{scope}: {self.title}"
 
     def branch_name(self, issue_number: int) -> str:
         """작업 브랜치 이름 `<type>/<Issue번호>-<slug>` (운영 규약 4.2)."""
