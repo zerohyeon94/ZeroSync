@@ -12,7 +12,7 @@ import pytest
 
 from bot.config import load_config
 from bot.discord_io.chat import DiscordChat
-from bot.discord_io.client import EMPTY_POST, ZeroSyncBot
+from bot.discord_io.client import EMPTY_POST, ZeroSyncBot, project_contexts
 from bot.discord_io.rules import (
     AUTHOR_NAMES,
     IncomingMessage,
@@ -291,6 +291,17 @@ def interaction(user_id=ZERO, channel_id=500, parent_id=FORUM):
     )
 
 
+def test_fix_command_passes_recommended_arg(bot):
+    async def main():
+        it = interaction()
+        await bot.run_command(it, CommandName.FIX, "권장 반영")
+        await drain(bot)
+        return it
+
+    it = run(main())
+    assert it.response.sent == [("/fix 권장 반영", {"silent": True})]
+
+
 def test_command_is_echoed_and_sent_to_engine(bot):
     async def main():
         it = interaction()
@@ -343,7 +354,13 @@ def test_intents_include_message_content(bot):
     assert bot.intents.message_content is True
     assert isinstance(bot.guild_ref, discord.Object) and bot.guild_ref.id == 1
     names = {command.name for command in bot.tree.get_commands(guild=bot.guild_ref)}
-    assert names == {"debate", "decide", "stop", "status", "ping"}
+    assert names == {
+        "debate", "decide", "approve", "revise", "fix", "resume", "stop", "status", "ping"
+    }  # fmt: skip
+    project = project_contexts(bot.config)["gagaessi"]
+    assert project.github.repo == "owner/GagaeSsi"
+    assert project.feature_dir.parts[-2:] == ("d", "기능")
+    assert bot.thread_url("5") == "https://discord.com/channels/1/5"
 
 
 def test_startup_failure_alerts_ops_and_closes(bot):
