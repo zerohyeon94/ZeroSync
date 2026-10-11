@@ -1,0 +1,223 @@
+"""대시보드용 읽기 전용 조회 (SPEC 8의 tasks·events·agent_runs).
+
+봇과 같은 DB를 읽기 전용(`mode=ro`)으로 연다. 쓰기는 하지 않는다.
+요청마다 연결을 새로 열어 스레드 간에 연결을 나눠 쓰지 않는다.
+"""
+
+import json
+import sqlite3
+from collections import Counter
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+_DURATION = "(julianday(r.finished_at) - julianday(r.started_at)) * 86400"
+
+
+class DatabaseMissing(FileNotFoundError):
+    """봇이 아직 한 번도 실행되지 않아 DB가 없다."""
+
+
+def open_readonly(path: Path) -> sqlite3.Connection:
+    if not path.exists():
+        raise DatabaseMissing(f"DB가 없다: {path}. 봇을 한 번 실행하면 만들어진다")
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+@dataclass(frozen=True)
+class ProjectSummary:
+    project: str
+    tasks: int
+    by_state: dict[str, int]
+    runs: int
+    by_status: dict[str, int]
+
+
+@dataclass(frozen=True)
+class StageStat:
+    agent: str
+    stage: str
+    runs: int
+    avg_sec: float | None
+    by_status: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class TaskRow:
+    id: int
+    project: str
+    discord_thread: str
+    title: str
+    state: str
+    prev_state: str | None
+    opinion_rounds: int
+    review_round: int
+    test_retry: int
+    created_at: str
+    updated_at: str
+    runs: int
+
+
+@dataclass(frozen=True)
+class EventRow:
+    id: int
+    actor: str
+    kind: str
+    payload: Any
+    discord_message: str | None
+    created_at: str
+
+
+@dataclass(frozen=True)
+class RunRow:
+    id: str
+    task_id: int
+    project: str
+    title: str
+    agent: str
+    stage: str
+    status: str
+    exit_code: int | None
+    log_path: str | None
+    started_at: str
+    finished_at: str | None
+    duration_sec: float | None
+
+
+def project_summaries(conn: sqlite3.Connection) -> list[ProjectSummary]:
+    states: dict[str, Counter[str]] = {}
+    for row in conn.execute("SELECT project, state, COUNT(*) AS n FROM tasks GROUP BY 1, 2"):
+        states.setdefault(row["project"], Counter())[row["state"]] = row["n"]
+    statuses: dict[str, Counter[str]] = {}
+    for row in conn.execute(
+        "SELECT t.project, r.status, COUNT(*) AS n FROM agent_runs r "
+        "JOIN tasks t ON t.id = r.task_id GROUP BY 1, 2"
+    ):
+        statuses.setdefault(row["project"], Counter())[row["status"]] = row["n"]
+    return [
+        ProjectSummary(
+            project=project,
+            tasks=sum(states.get(project, Counter()).values()),
+            by_state=dict(states.get(project, Counter())),
+            runs=sum(statuses.get(project, Counter()).values()),
+            by_status=dict(statuses.get(project, Counter())),
+        )
+        for project in sorted(set(states) | set(statuses))
+    ]
+
+
+def stage_stats(conn: sqlite3.Connection) -> list[StageStat]:
+    """에이전트·단계별 실행 수와 평균 소요 시간.
+
+    평균은 성공한 실행만 넣는다. 취소·시간 초과가 섞이면 실제 응답 시간을 알 수 없다.
+    """
+    stats: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in conn.execute(
+        f"SELECT r.agent, r.stage, r.status, COUNT(*) AS n, AVG({_DURATION}) AS avg_sec "
+        "FROM agent_runs r GROUP BY 1, 2, 3"
+    ):
+        entry = stats.setdefault(
+            (row["agent"], row["stage"]), {"runs": 0, "weighted": 0.0, "timed": 0, "by": {}}
+        )
+        entry["runs"] += row["n"]
+        entry["by"][row["status"]] = row["n"]
+        if row["status"] == "ok" and row["avg_sec"] is not None:
+            entry["weighted"] += row["avg_sec"] * row["n"]
+            entry["timed"] += row["n"]
+    return [
+        StageStat(
+            agent,
+            stage,
+            entry["runs"],
+            entry["weighted"] / entry["timed"] if entry["timed"] else None,
+            entry["by"],
+        )
+        for (agent, stage), entry in sorted(stats.items())
+    ]
+
+
+_TASK_SELECT = (
+    "SELECT t.*, (SELECT COUNT(*) FROM agent_runs r WHERE r.task_id = t.id) AS runs FROM tasks t"
+)
+
+
+def _task(row: sqlite3.Row) -> TaskRow:
+    return TaskRow(**{name: row[name] for name in TaskRow.__dataclass_fields__})
+
+
+def list_tasks(
+    conn: sqlite3.Connection, *, project: str | None = None, state: str | None = None
+) -> list[TaskRow]:
+    where, params = [], []
+    if project:
+        where.append("t.project = ?")
+        params.append(project)
+    if state:
+        where.append("t.state = ?")
+        params.append(state)
+    sql = _TASK_SELECT + (" WHERE " + " AND ".join(where) if where else "")
+    return [_task(row) for row in conn.execute(sql + " ORDER BY t.id DESC", params)]
+
+
+def get_task(conn: sqlite3.Connection, task_id: int) -> TaskRow | None:
+    row = conn.execute(_TASK_SELECT + " WHERE t.id = ?", (task_id,)).fetchone()
+    return None if row is None else _task(row)
+
+
+def task_events(conn: sqlite3.Connection, task_id: int) -> list[EventRow]:
+    rows = conn.execute("SELECT * FROM events WHERE task_id = ? ORDER BY id", (task_id,))
+    return [
+        EventRow(
+            row["id"],
+            row["actor"],
+            row["kind"],
+            json.loads(row["payload"]),
+            row["discord_message"],
+            row["created_at"],
+        )
+        for row in rows
+    ]
+
+
+_RUN_SELECT = (
+    f"SELECT r.*, t.project, t.title, {_DURATION} AS duration_sec "
+    "FROM agent_runs r JOIN tasks t ON t.id = r.task_id"
+)
+
+
+def _run(row: sqlite3.Row) -> RunRow:
+    return RunRow(**{name: row[name] for name in RunRow.__dataclass_fields__})
+
+
+def list_runs(
+    conn: sqlite3.Connection,
+    *,
+    project: str | None = None,
+    status: str | None = None,
+    task_id: int | None = None,
+    limit: int = 200,
+) -> list[RunRow]:
+    where, params = [], []
+    if project:
+        where.append("t.project = ?")
+        params.append(project)
+    if status:
+        where.append("r.status = ?")
+        params.append(status)
+    if task_id is not None:
+        where.append("r.task_id = ?")
+        params.append(task_id)
+    sql = _RUN_SELECT + (" WHERE " + " AND ".join(where) if where else "")
+    sql += " ORDER BY r.started_at DESC, r.id LIMIT ?"
+    return [_run(row) for row in conn.execute(sql, [*params, limit])]
+
+
+def get_run(conn: sqlite3.Connection, run_id: str) -> RunRow | None:
+    row = conn.execute(_RUN_SELECT + " WHERE r.id = ?", (run_id,)).fetchone()
+    return None if row is None else _run(row)
+
+
+def projects(conn: sqlite3.Connection) -> list[str]:
+    return [row[0] for row in conn.execute("SELECT DISTINCT project FROM tasks ORDER BY 1")]
