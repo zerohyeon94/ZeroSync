@@ -12,6 +12,7 @@ target_feature가 실제 `기능/` 폴더의 파일인지, design_doc이 Issue �
 """
 
 import re
+import unicodedata
 from enum import StrEnum
 from typing import Annotated, Self
 
@@ -101,7 +102,8 @@ class DesignSummary(BaseModel):
     @field_validator("target_feature")
     @classmethod
     def _strip_md_extension(cls, value: str) -> str:
-        return value.removesuffix(".md")
+        # 기능 폴더 이름과 같은 조합형(NFC)으로 비교한다
+        return unicodedata.normalize("NFC", value.removesuffix(".md"))
 
     @model_validator(mode="after")
     def _design_doc_matches(self, info: ValidationInfo) -> Self:

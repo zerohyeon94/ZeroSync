@@ -778,3 +778,15 @@ def test_fix_recommended_once_before_merge():
         assert task.state is TaskState.AWAIT_MERGE and task.recommended_fixed == 1
         await h.engine.on_command(THREAD, CommandName.FIX)
         assert "1회만" in h.chat.posts[-1].text
+
+
+def test_feature_names_are_normalized_to_nfc(tmp_path):
+    import unicodedata
+
+    folder = tmp_path / "기능"
+    folder.mkdir()
+    (folder / (unicodedata.normalize("NFD", "가게씨 - 여행 지출과 정산") + ".md")).write_text("x")
+    names = ProjectContext(repo=tmp_path, feature_dir=folder).feature_names()
+    assert names == {"가게씨 - 여행 지출과 정산"}
+    assert all(unicodedata.is_normalized("NFC", n) for n in names)
+    assert ProjectContext(repo=tmp_path, feature_dir=tmp_path / "없음").feature_names() is None

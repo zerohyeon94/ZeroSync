@@ -13,6 +13,7 @@ Discord 계층이 넘긴 입력(게시글, 메시지, 명령)으로 전이를 �
 
 import asyncio
 import logging
+import unicodedata
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -100,7 +101,8 @@ class ProjectContext:
     def feature_names(self) -> set[str] | None:
         if self.feature_dir is None or not self.feature_dir.is_dir():
             return None
-        return {path.stem for path in self.feature_dir.glob("*.md")}
+        # macOS·iCloud 파일 이름은 한글이 분해형(NFD)으로 저장될 수 있다. 조합형(NFC)으로 맞춘다
+        return {unicodedata.normalize("NFC", path.stem) for path in self.feature_dir.glob("*.md")}
 
 
 @dataclass(frozen=True)

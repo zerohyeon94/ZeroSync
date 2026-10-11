@@ -216,3 +216,16 @@ def test_implementation_report():
         )
     with pytest.raises(ValidationError):
         ImplementationReport.model_validate({"changes_summary": "", "design_intent": "b"})
+
+
+def test_target_feature_is_compared_in_nfc():
+    """볼트 파일 이름이 분해형(NFD)이어도 같은 이름으로 본다 (2026-10-12 실제 실행에서 발견)."""
+    import unicodedata
+
+    name = "가게씨 - 초과분 부채와 상환"
+    nfd_folder = {unicodedata.normalize("NFD", name)}
+    nfc_folder = {unicodedata.normalize("NFC", n) for n in nfd_folder}
+    summary = validate(design_data(target_feature=unicodedata.normalize("NFC", name)), nfc_folder)
+    assert summary.target_feature == name
+    summary = validate(design_data(target_feature=unicodedata.normalize("NFD", name)), nfc_folder)
+    assert unicodedata.is_normalized("NFC", summary.target_feature)
