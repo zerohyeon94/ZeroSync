@@ -185,3 +185,22 @@ def test_missing_database_shows_message(tmp_path):
     assert status is HTTPStatus.OK
     assert "봇을 한 번 실행하면 만들어진다" in body
     assert not (tmp_path / "none.db").exists()
+
+
+def test_phase2_events_are_rendered(settings):
+    from bot.testrun import TestReport
+
+    async def add():
+        conn = await connect(settings.db)
+        repo = Repository(conn, FixedClock(T0))
+        try:
+            report = TestReport(RunStatus.OK, 0, 431, 0, duration_sec=700.0)
+            await repo.add_event(1, NewEvent(Actor.BOT, EventKind.TEST, report.to_payload()))
+            await repo.add_event(1, NewEvent(Actor.BOT, EventKind.MERGE, {"pr": 43}))
+        finally:
+            await conn.close()
+
+    asyncio.run(add())
+    _, body = get(settings, "/tasks/1")
+    assert "테스트 통과 — 431개" in body
+    assert "PR #43 merge 감지" in body
