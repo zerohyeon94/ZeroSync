@@ -19,7 +19,7 @@ from bot.workflow.engine import Engine
 from bot.workflow.state import CommandName, TaskState
 
 T0 = datetime(2026, 10, 10, 9, 0, tzinfo=UTC)
-REPO = Path("/repos/gagessi")
+REPO = Path("/repos/gagaessi")
 THREAD = "thread-1"
 
 
@@ -50,13 +50,13 @@ class Harness:
             self.repo,
             self.chat,
             {"claude": claude, "codex": codex},
-            {"gagessi": REPO},
+            {"gagaessi": REPO},
             timeout_sec=60,
         )
 
     async def post(self, text="예산 초과 시 배너를 띄우자"):
         return await self.engine.on_post(
-            project="gagessi", thread=THREAD, title="예산 배너", text=text
+            project="gagaessi", thread=THREAD, title="예산 배너", text=text
         )
 
     async def task(self):
@@ -387,7 +387,7 @@ def test_recover_interrupted_runs():
         task = await h.post()
         # 재시작 전에 끝나지 않은 실행이 남았다
         await h.repo.start_agent_run("left-1", task_id=task.id, agent="codex", stage=Stage.OPINION)
-        other = await h.engine.on_post(project="gagessi", thread="t2", title="두 번째", text="x")
+        other = await h.engine.on_post(project="gagaessi", thread="t2", title="두 번째", text="x")
         from bot.store import Actor, NewEvent
 
         await h.repo.apply_transition(

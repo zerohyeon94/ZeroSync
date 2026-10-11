@@ -414,12 +414,12 @@ CREATE TABLE agent_runs (
 
 ```yaml
 projects:
-  gagessi:
+  gagaessi:
     forum_channel_id: "..."
-    repo: ~/Dev/Gagessi
-    github: zerohyeon94/Gagessi
+    repo: ~/Developer/GagaeSsi
+    github: zerohyeon94/GagaeSsi
     base_branch: develop
-    test: xcodebuild test -scheme Gagessi -destination 'platform=iOS Simulator,name=iPhone 16'
+    test: xcodebuild test -scheme GagaeSsi -destination 'platform=iOS Simulator,name=iPhone 16'
     vault_dir: 일일 예산 관리 앱
     vault_hub: 가게씨.md
     vault_tag: brain/gagaessi
