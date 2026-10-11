@@ -30,7 +30,9 @@ _SWIFT_FAILED = re.compile(r"✘ Test (?!run with)(?P<name>.+?) (?:failed|record
 # 이 형식에서는 "Executed N tests" 합계 줄이 나오지 않는다 (2026-10-11 Xcode 27 확인)
 _PARALLEL_CASE = re.compile(r"^Test case '(?P<name>[^']+)' (?P<result>passed|failed) on ", re.M)
 _FAILING_BLOCK = re.compile(r"^Failing tests:\n(?P<body>(?:[ \t]+\S.*\n?)+)", re.M)
-_ERROR_LINE = re.compile(r"(^|\s)error: ")
+# 컴파일 오류·테스트 단언 실패("/x.swift:42:13: error: ...")와 xcodebuild 자체 오류만 모은다.
+# 앱이 실행 중 남기는 로그("CoreData: error: ...")는 빼야 한다 (2026-10-11 GagaeSsi 출력으로 확인)
+_ERROR_LINE = re.compile(r"^(?:/\S+\.\w+:\d+(?::\d+)?: error: |xcodebuild: error: )")
 
 
 @dataclass(frozen=True)
@@ -95,7 +97,7 @@ def summarize(output: str) -> tuple[int | None, int | None, list[str], list[str]
                 failed.append(name)
     errors = []
     for line in output.splitlines():
-        if _ERROR_LINE.search(line) and line.strip() not in errors:
+        if _ERROR_LINE.match(line) and line.strip() not in errors:
             errors.append(line.strip()[:300])
     return total, failures, failed[:MAX_FAILED_TESTS], errors[:MAX_ERRORS]
 

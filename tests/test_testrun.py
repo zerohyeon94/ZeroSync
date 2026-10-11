@@ -63,6 +63,20 @@ Failing tests:
 """
 
 
+def test_app_runtime_logs_are_not_errors():
+    output = (
+        "2026-10-11 22:14:48.68 GagaeSsi[1:2] [error] CoreData: error: +[BudgetConfig entity] x\n"
+        "CoreData: error: +[DailyBudget entity] Failed\n"
+        "/x/PastTests.swift:148: error: -[GagaeSsiTests.PastTests test_a] : XCTAssertEqual failed\n"
+        "xcodebuild: error: Failed to build project GagaeSsi\n"
+    )
+    _, _, _, errors = summarize(output)
+    assert errors == [
+        "/x/PastTests.swift:148: error: -[GagaeSsiTests.PastTests test_a] : XCTAssertEqual failed",
+        "xcodebuild: error: Failed to build project GagaeSsi",
+    ]
+
+
 def test_summarize_parallel_clone_output():
     """Xcode 27 병렬 테스트 출력에는 'Executed N tests' 합계가 없다."""
     total, failures, failed, _ = summarize(PARALLEL_FAIL)
