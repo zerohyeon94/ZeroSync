@@ -14,6 +14,9 @@ _TEXT = {
     ),
     NoticeCode.AGENT_FAILED: "응답을 받지 못했다. 같은 질문을 다시 보내면 다시 요청한다.",
     NoticeCode.NOT_IMPLEMENTED: "아직 구현되지 않은 명령이다.",
+    NoticeCode.INTERRUPTED: (
+        "봇이 재시작되어 진행 중이던 단계를 멈췄다. 확인 후 판단하거나 /stop으로 끝낸다."
+    ),
 }
 
 

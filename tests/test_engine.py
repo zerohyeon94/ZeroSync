@@ -376,3 +376,40 @@ def test_unimplemented_command_gets_notice():
         await h.engine.on_command(THREAD, CommandName.RESUME)
         assert "아직 구현되지 않은 명령" in h.chat.posts[-1].text
         assert (await h.task()).state is TaskState.NEEDS_HUMAN
+
+
+# 재시작 복구 (SPEC 3.4, Q8)
+
+
+def test_recover_interrupted_runs():
+    @scenario(claude=[opinion("a"), opinion("a2")], codex=[opinion("b"), opinion("b2")])
+    async def _(h):
+        task = await h.post()
+        # 재시작 전에 끝나지 않은 실행이 남았다
+        await h.repo.start_agent_run("left-1", task_id=task.id, agent="codex", stage=Stage.OPINION)
+        other = await h.engine.on_post(project="gagessi", thread="t2", title="두 번째", text="x")
+        from bot.store import Actor, NewEvent
+
+        await h.repo.apply_transition(
+            other.id,
+            expected_state=TaskState.OPINIONS,
+            new_state=TaskState.DESIGNING,
+            event=NewEvent(Actor.ZERO, EventKind.DECISION, {"text": "간다"}),
+        )
+        await h.repo.start_agent_run("left-2", task_id=other.id, agent="claude", stage=Stage.DESIGN)
+        h.chat.posts.clear()
+
+        await h.engine.recover_interrupted()
+
+        assert await h.repo.list_running_agent_runs() == []
+        # OPINIONS는 실패 안내 후 그대로
+        assert (await h.task()).state is TaskState.OPINIONS
+        first, second = h.chat.posts
+        assert first.thread == THREAD and "봇 재시작으로 중단" in first.text
+        assert first.mention is True
+        # 그 밖의 진행 중 단계는 NEEDS_HUMAN
+        moved = await h.repo.get_task(other.id)
+        assert moved.state is TaskState.NEEDS_HUMAN
+        assert moved.prev_state is TaskState.DESIGNING
+        assert second.thread == "t2" and "재시작" in second.text and second.mention is True
+        assert len(h.chat.ops) == 2 and all(mention for _, mention in h.chat.ops)
