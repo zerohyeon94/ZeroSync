@@ -49,6 +49,27 @@ def test_summarize_swift_testing_and_build_errors():
     assert errors == ["/x/HomeView.swift:42:13: error: cannot find 'bannerView' in scope"]
 
 
+CLONE = "on 'Clone 1 of iPhone 17 - GagaeSsi (45140)'"
+PARALLEL_FAIL = f"""\
+Test suite 'PastOverspendConversionTests' started {CLONE}
+Test case 'PastOverspendConversionTests.test_전환()' passed {CLONE} (0.065 seconds)
+Test case 'PastOverspendConversionTests.test_소급()' failed {CLONE} (0.504 seconds)
+Test case 'GagaeSsiTests/example()' passed {CLONE} (0.000 seconds)
+
+Failing tests:
+\tPastOverspendConversionTests.test_소급()
+
+** TEST FAILED **
+"""
+
+
+def test_summarize_parallel_clone_output():
+    """Xcode 27 병렬 테스트 출력에는 'Executed N tests' 합계가 없다."""
+    total, failures, failed, _ = summarize(PARALLEL_FAIL)
+    assert (total, failures) == (3, 1)
+    assert failed == ["PastOverspendConversionTests.test_소급()"]
+
+
 def run_tests(tmp_path, script, *, concurrent=1):
     runner = TestRunner(ProcessRunner(tmp_path / "runs"), concurrent=concurrent, timeout_sec=10)
     argv = [sys.executable, "-c", script]

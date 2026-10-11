@@ -26,6 +26,10 @@ _XCTEST_FAILED = re.compile(r"Test Case '-\[(?P<name>[^\]]+)\]' failed")
 _SWIFT_RUN = re.compile(r"Test run with (\d+) tests?(?: in \d+ suites?)? (passed|failed)")
 _SWIFT_ISSUES = re.compile(r"with (\d+) issues?")
 _SWIFT_FAILED = re.compile(r"✘ Test (?!run with)(?P<name>.+?) (?:failed|recorded an issue)")
+# 병렬 테스트(시뮬레이터 복제본): "Test case 'Suite.test()' passed on 'Clone 1 of iPhone 17 ...'"
+# 이 형식에서는 "Executed N tests" 합계 줄이 나오지 않는다 (2026-10-11 Xcode 27 확인)
+_PARALLEL_CASE = re.compile(r"^Test case '(?P<name>[^']+)' (?P<result>passed|failed) on ", re.M)
+_FAILING_BLOCK = re.compile(r"^Failing tests:\n(?P<body>(?:[ \t]+\S.*\n?)+)", re.M)
 _ERROR_LINE = re.compile(r"(^|\s)error: ")
 
 
@@ -73,7 +77,17 @@ def summarize(output: str) -> tuple[int | None, int | None, list[str], list[str]
         swift_failures = int(issues[0]) if swift[-1][1] == "failed" and issues else 0
         total = (total or 0) + swift_total
         failures = (failures or 0) + swift_failures
-    failed: list[str] = []
+    parallel = _PARALLEL_CASE.findall(output)
+    if parallel and total is None:
+        total = len(parallel)
+        failures = sum(1 for _, result in parallel if result == "failed")
+    failed: list[str] = [name for name, result in parallel if result == "failed"]
+    block = _FAILING_BLOCK.search(output)
+    if block:
+        for line in block["body"].splitlines():
+            name = line.strip()
+            if name and name not in failed:
+                failed.append(name)
     for pattern in (_XCTEST_FAILED, _SWIFT_FAILED):
         for match in pattern.finditer(output):
             name = match["name"].strip()
