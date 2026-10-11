@@ -74,6 +74,7 @@ class ZeroSyncBot(discord.Client):
         self._webhooks: dict[int, discord.Webhook] = {}
         self._background: set[asyncio.Task[None]] = set()
         self._started = False
+        self.startup_error: Exception | None = None
         _register_commands(self)
 
     # 시작
@@ -87,7 +88,20 @@ class ZeroSyncBot(discord.Client):
             return
         self._started = True
         log.info("Discord 연결: %s", self.user)
-        await self._prepare_webhooks()
+        try:
+            await self._prepare_webhooks()
+        except Exception as error:
+            # 웹훅 없이 떠 있으면 게시글을 받아도 답할 수 없다. 알리고 종료한다
+            log.exception("시작 준비 실패")
+            self.startup_error = error
+            try:
+                await self.chat.notify_ops(
+                    f"ZeroSync 봇 시작 실패: {error}", mention=should_mention(Moment.BOT_ERROR)
+                )
+            except Exception:
+                log.exception("운영 채널 알림 실패")
+            await self.close()
+            return
         await self.engine.recover_interrupted()
         await self.chat.notify_ops(
             f"ZeroSync 봇을 시작했다. 프로젝트: {', '.join(self.config.projects)}",
@@ -97,9 +111,18 @@ class ZeroSyncBot(discord.Client):
     async def _prepare_webhooks(self) -> None:
         assert self.user is not None
         for forum_id, project in self.forums.items():
-            channel = self.get_channel(forum_id) or await self.fetch_channel(forum_id)
+            try:
+                channel = self.get_channel(forum_id) or await self.fetch_channel(forum_id)
+            except (discord.NotFound, discord.Forbidden) as error:
+                raise RuntimeError(
+                    f"{project}의 forum_channel_id 채널을 찾을 수 없거나 볼 권한이 없다"
+                ) from error
             if not isinstance(channel, discord.ForumChannel):
-                raise RuntimeError(f"{project}의 forum_channel_id가 포럼 채널이 아니다")
+                name = getattr(channel, "name", "?")
+                raise RuntimeError(
+                    f"{project}의 forum_channel_id가 포럼 채널이 아니다 "
+                    f"(#{name}, 종류 {getattr(channel, 'type', '?')})"
+                )
             hooks = await channel.webhooks()
             hook = next(
                 (
@@ -265,5 +288,7 @@ async def run_bot(config: Config) -> None:
         bot = ZeroSyncBot(config, Repository(conn, SystemClock()), runners)
         async with bot:
             await bot.start(config.secrets.discord_token.get_secret_value())
+        if bot.startup_error is not None:
+            raise bot.startup_error
     finally:
         await conn.close()

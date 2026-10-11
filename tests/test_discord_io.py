@@ -341,3 +341,27 @@ def test_intents_include_message_content(bot):
     assert isinstance(bot.guild_ref, discord.Object) and bot.guild_ref.id == 1
     names = {command.name for command in bot.tree.get_commands(guild=bot.guild_ref)}
     assert names == {"debate", "decide", "stop", "status", "ping"}
+
+
+def test_startup_failure_alerts_ops_and_closes(bot):
+    alerts, closed = [], []
+
+    async def notify_ops(text, *, mention=False):
+        alerts.append((text, mention))
+
+    async def prepare():
+        raise RuntimeError("gagessi의 forum_channel_id가 포럼 채널이 아니다 (#일반, 종류 text)")
+
+    async def close():
+        closed.append(True)
+
+    bot.chat.notify_ops = notify_ops
+    bot._prepare_webhooks = prepare
+    bot.close = close
+    run(bot.on_ready())
+
+    assert closed == [True]
+    assert isinstance(bot.startup_error, RuntimeError)
+    ((text, mention),) = alerts
+    assert "시작 실패" in text and "#일반" in text
+    assert mention is True
