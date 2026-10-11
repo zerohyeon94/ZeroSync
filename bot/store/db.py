@@ -55,7 +55,14 @@ CREATE TABLE agent_runs (
 CREATE INDEX agent_runs_task ON agent_runs(task_id);
 """
 
-MIGRATIONS: tuple[str, ...] = (_V1,)
+# v2: /resume으로 늘린 한도와 /fix 권장 반영 사용 여부 (SPEC 3.3, Q4)
+_V2 = """
+ALTER TABLE tasks ADD COLUMN review_limit_bonus INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN test_limit_bonus INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN recommended_fixed INTEGER NOT NULL DEFAULT 0;
+"""
+
+MIGRATIONS: tuple[str, ...] = (_V1, _V2)
 SCHEMA_VERSION = len(MIGRATIONS)
 
 

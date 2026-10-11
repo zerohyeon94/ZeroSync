@@ -27,6 +27,8 @@ LOCAL_GIT = (
     "Bash(git show:*)",
     "Bash(git add:*)",
     "Bash(git commit:*)",
+    "Bash(git mv:*)",
+    "Bash(git rm:*)",
 )
 DESIGN_TOOLS = (*READ_TOOLS, "Edit(docs/설계/**)", "Write(docs/설계/**)", *LOCAL_GIT)
 IMPLEMENT_TOOLS = (*READ_TOOLS, "Edit", "Write", *LOCAL_GIT)

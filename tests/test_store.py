@@ -81,7 +81,7 @@ def test_connect_creates_schema_and_file(tmp_path):
 
     version, tables, fk = run(scenario())
     assert path.exists()
-    assert version == SCHEMA_VERSION == 1
+    assert version == SCHEMA_VERSION == 2
     assert {"tasks", "events", "agent_runs"} <= tables
     assert fk == 1
 
@@ -310,3 +310,31 @@ def test_agent_run_requires_existing_task():
         await conn.close()
 
     run(scenario())
+
+
+def test_v1_database_is_upgraded_with_defaults(tmp_path):
+    """Phase 1에서 만든 실제 DB(v1)가 v2로 올라가고 기존 작업은 기본값을 받는다."""
+    import sqlite3
+
+    from bot.store.db import MIGRATIONS
+
+    path = tmp_path / "old.db"
+    raw = sqlite3.connect(path)
+    raw.executescript(MIGRATIONS[0] + "\nPRAGMA user_version = 1;")
+    raw.execute(
+        "INSERT INTO tasks (project, discord_thread, title, state, created_at, updated_at) "
+        "VALUES ('gagaessi', 't', '제목', 'DESIGNING', 'x', 'x')"
+    )
+    raw.commit()
+    raw.close()
+
+    async def scenario():
+        conn, repo = await open_repo(path)
+        try:
+            return await schema_version(conn), await repo.get_task(1)
+        finally:
+            await conn.close()
+
+    version, task = run(scenario())
+    assert version == 2
+    assert (task.review_limit_bonus, task.test_limit_bonus, task.recommended_fixed) == (0, 0, 0)

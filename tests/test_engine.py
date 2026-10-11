@@ -1,11 +1,12 @@
 """워크플로 엔진 통합 테스트 (SPEC 12.3).
 
-에이전트(FakeAgentRunner), 채팅(FakeChatIO), 저장소(메모리 SQLite), 시각(FixedClock)을
-가짜로 두고 OPINIONS 단계 한 사이클을 시뮬레이션한다.
+에이전트(FakeAgentRunner), 채팅(FakeChatIO), GitHub(FakeGitHub), git(FakeGit), 테스트 실행,
+저장소(메모리 SQLite), 시각(FixedClock)을 가짜로 두고 사이클을 시뮬레이션한다.
 """
 
 import asyncio
 import json
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -13,9 +14,11 @@ import pytest
 
 from bot.agents import AgentRequest, AgentResult, FakeAgentRunner, RunStatus, Stage
 from bot.clock import FixedClock
+from bot.github.fake import FakeGit, FakeGitHub
 from bot.store import EventKind, Repository, connect
+from bot.testrun import TestReport
 from bot.workflow.chat import FakeChatIO
-from bot.workflow.engine import Engine
+from bot.workflow.engine import Engine, ProjectContext
 from bot.workflow.state import CommandName, TaskState
 
 T0 = datetime(2026, 10, 10, 9, 0, tzinfo=UTC)
@@ -40,19 +43,133 @@ def failed(status=RunStatus.TIMEOUT):
     return AgentResult(status, None, "", "시간 초과", None, 1.0, Path("runs/x.log"))
 
 
+DESIGN = {
+    "change_type": "feature_change",
+    "target_feature": "예산 배너",
+    "slug": "budget-banner",
+    "title": "월 예산 초과 시 홈 화면 배너 표시",
+    "scope": "budget",
+    "summary": "홈 화면에 초과 배너를 띄운다",
+    "changes": ["HomeView 배너"],
+    "test_plan": ["경계 테스트"],
+    "risks": [],
+    "design_doc": "docs/설계/42-budget-banner.md",
+}
+
+
+def design_reply(git=None, *, commit="docs(design): 배너 설계\n\nRefs: #42", **overrides):
+    """설계 파일을 쓰고 커밋한 뒤 설계 JSON을 돌려주는 가짜 Beta."""
+    data = {**DESIGN, **overrides}
+
+    def respond(request):
+        doc = request.cwd / data["design_doc"]
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("설계 전문", encoding="utf-8")
+        respond.git.add_commit(request.cwd, commit)
+        return json.dumps(data, ensure_ascii=False)
+
+    respond.git = git
+    return respond
+
+
+def work_reply(message="feat(budget): 배너 추가\n\nRefs: #42", responses=()):
+    """커밋을 하나 쌓고 구현 보고를 돌려주는 가짜 Beta."""
+
+    def respond(request):
+        respond.git.add_commit(request.cwd, message)
+        return json.dumps(
+            {
+                "changes_summary": "배너를 추가했다",
+                "design_intent": "홈에서 바로 보이게",
+                "check_points": ["경계 시각"],
+                "responses": list(responses),
+            },
+            ensure_ascii=False,
+        )
+
+    respond.git = None
+    return respond
+
+
+def review_reply(required=0, recommended=0):
+    findings = [
+        {"severity": "required", "file": "HomeView.swift", "line": 3, "problem": f"필수 {i}",
+         "reason": "버그", "suggestion": "고친다"}
+        for i in range(1, required + 1)
+    ] + [
+        {"severity": "recommended", "file": None, "line": None, "problem": f"권장 {i}",
+         "reason": "가독성", "suggestion": "다듬는다"}
+        for i in range(1, recommended + 1)
+    ]  # fmt: skip
+    verdict = "CHANGES_REQUESTED" if required else "APPROVED"
+    return json.dumps(
+        {"verdict": verdict, "summary": "검토했다", "findings": findings}, ensure_ascii=False
+    )
+
+
+def make_report(passed=True, failed=()):
+    status = RunStatus.OK if passed else RunStatus.ERROR
+    return TestReport(
+        status=status,
+        exit_code=0 if passed else 65,
+        total=10,
+        failures=0 if passed else len(failed) or 1,
+        failed_tests=list(failed),
+        duration_sec=3.0,
+        log_path="runs/test.log",
+    )
+
+
+class FakeTests:
+    def __init__(self, reports=()):
+        self.reports = list(reports)
+        self.runs = []
+        self.cancelled = []
+
+    async def run(self, run_id, argv, *, cwd):
+        self.runs.append((run_id, tuple(argv), cwd))
+        return self.reports.pop(0) if self.reports else make_report()
+
+    async def cancel(self, run_id):
+        self.cancelled.append(run_id)
+
+
 class Harness:
-    def __init__(self, conn, claude, codex):
+    def __init__(self, conn, claude, codex, tmp, tests=None):
         self.conn = conn
+        self.tmp = tmp
         self.repo = Repository(conn, FixedClock(T0))
         self.chat = FakeChatIO()
         self.claude, self.codex = claude, codex
+        self.github = FakeGitHub(repo="zerohyeon94/GagaeSsi")
+        self.git = FakeGit()
+        self.tests = tests or FakeTests()
+        self.features = tmp / "기능"
+        self.features.mkdir()
+        (self.features / "예산 배너.md").write_text("기능")
         self.engine = Engine(
             self.repo,
             self.chat,
             {"claude": claude, "codex": codex},
-            {"gagaessi": REPO},
+            {
+                "gagaessi": ProjectContext(
+                    repo=REPO,
+                    test_command=("xcodebuild", "test"),
+                    github=self.github,
+                    feature_dir=self.features,
+                )
+            },
             timeout_sec=60,
+            git=self.git,
+            tests=self.tests,
+            worktrees_dir=tmp / "worktrees",
+            thread_url=lambda thread: f"https://discord.com/channels/1/{thread}",
         )
+        # 가짜 Beta 응답이 같은 FakeGit에 커밋을 쌓게 한다
+        for runner in (claude, codex):
+            for response in getattr(runner, "_responses", []):
+                if getattr(response, "git", "unset") is None:
+                    response.git = self.git
 
     async def post(self, text="예산 초과 시 배너를 띄우자"):
         return await self.engine.on_post(
@@ -71,19 +188,24 @@ class Harness:
         return sorted(tuple(row) for row in rows)
 
 
-def scenario(claude=(), codex=()):
+def scenario(claude=(), codex=(), tests=None):
     """claude·codex 응답 목록으로 Harness를 만들어 시나리오 함수를 실행한다."""
 
     def wrap(body):
         async def main():
             conn = await connect(":memory:")
-            try:
-                h = Harness(
-                    conn, FakeAgentRunner("claude", claude), FakeAgentRunner("codex", codex)
-                )
-                return await body(h)
-            finally:
-                await conn.close()
+            with tempfile.TemporaryDirectory() as tmp:
+                try:
+                    h = Harness(
+                        conn,
+                        FakeAgentRunner("claude", claude),
+                        FakeAgentRunner("codex", codex),
+                        Path(tmp),
+                        FakeTests(tests or ()),
+                    )
+                    return await body(h)
+                finally:
+                    await conn.close()
 
         return asyncio.run(main())
 
@@ -283,22 +405,34 @@ def test_debate_needs_both_opinions():
 # /decide
 
 
-def test_decide_records_decision_and_stops_before_phase_2():
-    @scenario(claude=[opinion("a")], codex=[opinion("b")])
+def test_decide_creates_issue_and_starts_design():
+    @scenario(claude=[opinion("a"), design_reply()], codex=[opinion("b")])
     async def _(h):
         await h.post()
         await h.engine.on_command(THREAD, CommandName.DECIDE, "  배너로 간다  ")
-        task = await h.task()
-        assert task.state is TaskState.DESIGNING
         (decision,) = await h.events(EventKind.DECISION)
         assert decision.payload == {"text": "배너로 간다"}
-        notice = h.chat.posts[-1]
-        assert notice.author == "bot" and notice.mention is False
-        assert "결정을 기록했다" in notice.text
+
+        # Issue는 봇이 기존 텍스트로 조립한다 (운영 규약 1.8)
+        ((_, number, title, body, labels),) = h.github.named("create_issue")
+        assert (number, title, labels) == (42, "예산 배너", ("zerosync",))
+        assert "## 결정\n\n배너로 간다" in body
+        assert "예산 초과 시 배너를 띄우자" in body
+        assert "https://discord.com/channels/1/thread-1" in body
+        notice = next(p for p in h.chat.posts if "Issue #42" in p.text)
+        assert "결정을 기록하고" in notice.text and notice.mention is False
+
+        request = h.claude.requests[1]
+        assert request.stage is Stage.DESIGN
+        assert request.mode == "write_worktree"
+        assert request.cwd == h.tmp / "worktrees" / "gagaessi-42"
+        assert "예산 배너" in request.prompt  # 기능 정의서 목록
+        task = await h.task()
+        assert task.state is TaskState.AWAIT_DESIGN_APPROVAL
+        assert task.issue_number == 42
 
         await h.engine.on_message(THREAD, "추가 질문")
-        assert "현재 상태: DESIGNING" in h.chat.posts[-1].text
-        assert len(h.claude.requests) == 1
+        assert "현재 상태: AWAIT_DESIGN_APPROVAL" in h.chat.posts[-1].text
 
 
 def test_decide_without_direction_is_rejected():
@@ -338,7 +472,13 @@ def test_stop_cancels_running_agents_and_drops_results():
     async def main():
         conn = await connect(":memory:")
         try:
-            h = Harness(conn, BlockingRunner("claude"), FakeAgentRunner("codex", [opinion("b")]))
+            tmp = tempfile.TemporaryDirectory()
+            h = Harness(
+                conn,
+                BlockingRunner("claude"),
+                FakeAgentRunner("codex", [opinion("b")]),
+                Path(tmp.name),
+            )
             posting = asyncio.create_task(h.post())
             await h.claude.started.wait()
             await h.engine.on_command(THREAD, CommandName.STOP)
@@ -370,12 +510,13 @@ def test_unimplemented_command_gets_notice():
         await h.repo.apply_transition(
             task.id,
             expected_state=TaskState.OPINIONS,
-            new_state=TaskState.NEEDS_HUMAN,
+            new_state=TaskState.AWAIT_DOC_APPROVAL,
             event=NewEvent(Actor.BOT, EventKind.ERROR, {}),
         )
-        await h.engine.on_command(THREAD, CommandName.RESUME)
+        # 문서 반영은 Phase 3
+        await h.engine.on_command(THREAD, CommandName.APPROVE)
         assert "아직 구현되지 않은 명령" in h.chat.posts[-1].text
-        assert (await h.task()).state is TaskState.NEEDS_HUMAN
+        assert (await h.task()).state is TaskState.AWAIT_DOC_APPROVAL
 
 
 # 재시작 복구 (SPEC 3.4, Q8)
@@ -413,3 +554,227 @@ def test_recover_interrupted_runs():
         assert moved.prev_state is TaskState.DESIGNING
         assert second.thread == "t2" and "재시작" in second.text and second.mention is True
         assert len(h.chat.ops) == 2 and all(mention for _, mention in h.chat.ops)
+
+
+# Phase 2: 설계부터 merge까지 (SPEC 12.3 한 사이클 통합 테스트)
+
+
+WT = "worktrees/gagaessi-42"
+
+
+def test_full_cycle_from_decide_to_merge():
+    @scenario(
+        claude=[
+            opinion("a"),
+            design_reply(),
+            work_reply(),
+            work_reply("fix(budget): 테스트 실패 수정\n\nRefs: #42"),
+            work_reply(
+                "fix(budget): 리뷰 1라운드 [필수] 1 반영\n\nRefs: #42",
+                responses=[{"index": 1, "action": "fixed", "note": "고쳤다"}],
+            ),
+        ],
+        codex=[opinion("b"), review_reply(required=1, recommended=1), review_reply(recommended=1)],
+        tests=[
+            make_report(passed=False, failed=["BudgetTests testOver"]),
+            make_report(),
+            make_report(),
+        ],
+    )
+    async def _(h):
+        await h.post()
+        await h.engine.on_command(THREAD, CommandName.DECIDE, "배너로 간다")
+        task = await h.task()
+        assert task.state is TaskState.AWAIT_DESIGN_APPROVAL
+        assert task.branch == "feat/42-budget-banner"
+        worktree = h.tmp / WT
+        assert h.git.named("create_branch") == [
+            ("create_branch", worktree, "feat/42-budget-banner")
+        ]
+        assert ("push", worktree, "feat/42-budget-banner") in h.git.calls
+        design_post = next(p for p in h.chat.posts if p.text.startswith("**설계**"))
+        assert design_post.author == "claude" and design_post.mention is True
+        assert (
+            "https://github.com/zerohyeon94/GagaeSsi/blob/feat/42-budget-banner/"
+            "docs/설계/42-budget-banner.md" in design_post.text
+        )
+        assert h.github.named("comment_issue")[0][1] == 42
+
+        await h.engine.on_command(THREAD, CommandName.APPROVE)
+
+        task = await h.task()
+        assert task.state is TaskState.AWAIT_MERGE
+        # 설계 승인 시 type 라벨, PR은 테스트 통과 후 draft로 한 번만 만든다
+        assert ("add_labels", 42, ("type:feature",)) in h.github.calls
+        (pr,) = h.github.named("create_pr")
+        assert pr[1:5] == (
+            43,
+            "develop",
+            "feat/42-budget-banner",
+            "feat(budget): 월 예산 초과 시 홈 화면 배너 표시",
+        )
+        assert "Refs #42" in pr[5] and "## 변경 요약" in pr[5]
+        assert task.pr_number == 43
+        # 테스트 실패 1회 → 수정, 리뷰 CHANGES_REQUESTED 1회 → 수정
+        assert (task.test_retry, task.review_round) == (1, 1)
+        assert len(h.tests.runs) == 3
+        assert [r.stage for r in h.claude.requests[1:]] == [
+            Stage.DESIGN,
+            Stage.IMPLEMENT,
+            Stage.FIX,
+            Stage.FIX,
+        ]
+        fix_prompts = [r.prompt for r in h.claude.requests[3:]]
+        assert "BudgetTests testOver" in fix_prompts[0]
+        assert "필수 1" in fix_prompts[1] and "참고: [권장] 지적" in fix_prompts[1]
+        # 구현·수정 단계는 설계 세션을 이어 쓴다
+        assert all(r.mode == "write_worktree" for r in h.claude.requests[1:])
+        # 2라운드 리뷰는 이전 [필수] 지적 해결 여부를 확인한다
+        second_review = h.codex.requests[2].prompt
+        assert "이전 라운드 [필수] 지적" in second_review and "리뷰 라운드: 2" in second_review
+        assert h.codex.requests[1].mode == "read_only"
+        assert len(h.github.named("comment_pr")) == 2
+        assert h.github.named("mark_ready") == [("mark_ready", 43)]
+        approved = h.chat.posts[-1]
+        assert "APPROVED" in approved.text and approved.mention is True
+        assert "남은 [권장] 1개" in approved.text
+        # push는 모두 작업 브랜치로만
+        assert {call[2] for call in h.git.named("push")} == {"feat/42-budget-banner"}
+
+        # merge 감지
+        from bot.github.client import PrState
+
+        h.github.pr_states[43] = PrState("MERGED", True)
+        await h.engine.poll_merges()
+        task = await h.task()
+        assert task.state is TaskState.DONE
+        (close,) = h.github.named("close_issue")
+        assert close[1:3] == (42, False)
+        assert h.git.named("remove_worktree")
+        assert "merge를 확인" in h.chat.posts[-1].text
+
+        mentions = [p for p in h.chat.posts if p.mention]
+        # 의견 도착, 설계 완료, 최종 확인에서만 멘션 (운영 규약 2.5)
+        assert len(mentions) == 3
+
+
+def test_design_commit_problem_is_retried_then_needs_human():
+    bad = "설계 추가"  # 형식 위반
+
+    @scenario(
+        claude=[opinion("a"), design_reply(commit=bad), design_reply(commit=bad)],
+        codex=[opinion("b")],
+    )
+    async def _(h):
+        await h.post()
+        await h.engine.on_command(THREAD, CommandName.DECIDE, "간다")
+        retry = h.claude.requests[2].prompt
+        assert "이전 출력의 형식 오류" in retry and "형식이 아니다" in retry
+        task = await h.task()
+        assert task.state is TaskState.NEEDS_HUMAN
+        assert task.prev_state is TaskState.DESIGNING
+        assert ("add_labels", 42, ("needs-human",)) in h.github.calls
+        assert h.chat.posts[-1].mention is True
+        assert "/resume" in h.chat.posts[-1].text
+        # 브랜치를 만들지 않았으므로 push도 없다
+        assert h.git.named("push") == []
+
+
+def test_test_failure_limit_then_resume_adds_one_more_try():
+    failing = [make_report(passed=False) for _ in range(4)]
+
+    @scenario(
+        claude=[opinion("a"), design_reply(), work_reply()]
+        + [work_reply(f"fix: 테스트 수정 {i}\n\nRefs: #42") for i in range(3)],
+        codex=[opinion("b")],
+        tests=failing,
+    )
+    async def _(h):
+        await h.post()
+        await h.engine.on_command(THREAD, CommandName.DECIDE, "간다")
+        await h.engine.on_command(THREAD, CommandName.APPROVE)
+        task = await h.task()
+        # 2회 초과(3번째 실패)에서 NEEDS_HUMAN (Q2)
+        assert task.state is TaskState.NEEDS_HUMAN
+        assert task.test_retry == 3
+        assert len(h.tests.runs) == 3
+
+        await h.engine.on_command(THREAD, CommandName.RESUME)
+        task = await h.task()
+        # 한도만 1회 늘고 카운터는 유지 → 수정 1회 더, 그 테스트도 실패하면 다시 NEEDS_HUMAN
+        assert task.test_limit_bonus == 1
+        assert task.state is TaskState.NEEDS_HUMAN
+        assert task.test_retry == 4
+        assert ("remove_label", 42, "needs-human") in h.github.calls
+
+
+def test_revise_with_new_slug_renames_branch():
+    @scenario(
+        claude=[
+            opinion("a"),
+            design_reply(),
+            design_reply(
+                commit="docs(design): 설계 수정\n\nRefs: #42",
+                change_type="bug_fix",
+                slug="banner-fix",
+                design_doc="docs/설계/42-banner-fix.md",
+            ),
+        ],
+        codex=[opinion("b")],
+    )
+    async def _(h):
+        await h.post()
+        await h.engine.on_command(THREAD, CommandName.DECIDE, "간다")
+        await h.engine.on_command(THREAD, CommandName.REVISE, "버그 수정으로 보자")
+        task = await h.task()
+        assert task.state is TaskState.AWAIT_DESIGN_APPROVAL
+        assert task.branch == "fix/42-banner-fix"
+        worktree = h.tmp / WT
+        assert (
+            "rename_branch",
+            worktree,
+            "feat/42-budget-banner",
+            "fix/42-banner-fix",
+        ) in h.git.calls
+        assert ("delete_remote_branch", worktree, "feat/42-budget-banner") in h.git.calls
+        revise_prompt = h.claude.requests[2].prompt
+        assert "버그 수정으로 보자" in revise_prompt and "이전 설계 요약" in revise_prompt
+        assert len(h.github.named("comment_issue")) == 2
+
+
+def test_stop_after_design_closes_issue_and_deletes_branch():
+    @scenario(claude=[opinion("a"), design_reply()], codex=[opinion("b")])
+    async def _(h):
+        await h.post()
+        await h.engine.on_command(THREAD, CommandName.DECIDE, "간다")
+        await h.engine.on_command(THREAD, CommandName.STOP)
+        assert (await h.task()).state is TaskState.STOPPED
+        (close,) = h.github.named("close_issue")
+        assert close[1:3] == (42, True)  # not planned
+        assert ("delete_remote_branch", h.tmp / WT, "feat/42-budget-banner") in h.git.calls
+        assert h.git.named("remove_worktree")
+        assert h.github.named("close_pr") == []
+
+
+def test_fix_recommended_once_before_merge():
+    @scenario(
+        claude=[
+            opinion("a"),
+            design_reply(),
+            work_reply(),
+            work_reply("refactor: 권장 반영\n\nRefs: #42"),
+        ],
+        codex=[opinion("b"), review_reply(recommended=2), review_reply()],
+    )
+    async def _(h):
+        await h.post()
+        await h.engine.on_command(THREAD, CommandName.DECIDE, "간다")
+        await h.engine.on_command(THREAD, CommandName.APPROVE)
+        assert (await h.task()).state is TaskState.AWAIT_MERGE
+        await h.engine.on_command(THREAD, CommandName.FIX, "권장 반영")
+        prompt = h.claude.requests[-1].prompt
+        assert "[권장] 지적 반영을 요청" in prompt and "권장 2" in prompt
+        task = await h.task()
+        assert task.state is TaskState.AWAIT_MERGE and task.recommended_fixed == 1
+        await h.engine.on_command(THREAD, CommandName.FIX)
+        assert "1회만" in h.chat.posts[-1].text

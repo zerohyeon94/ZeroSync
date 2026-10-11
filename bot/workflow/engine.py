@@ -2,21 +2,26 @@
 
 Discord 계층이 넘긴 입력(게시글, 메시지, 명령)으로 전이를 계산해 저장하고, 효과를 실행한다.
 - 전이와 이벤트 기록은 한 트랜잭션으로 저장한다 (Repository.apply_transition)
-- 에이전트 호출 효과는 작업마다 하나씩 차례로 실행한다.
-  /stop은 기다리지 않고 바로 실행 중인 CLI를 끈다
-- 현재 구현 범위: OPINIONS 단계 (의견, 추가 질문, /debate, /decide 기록, /stop)
-  /decide 뒤의 Issue·볼트·설계 효과는 Phase 2에서 실행한다. 지금은 결정을 기록하고 안내만 한다
+- 에이전트·테스트 작업은 작업마다 하나씩 차례로 실행한다. 시작 직전에 상태를 다시 확인해,
+  기다리는 사이 /stop 등으로 단계가 바뀌었으면 실행하지 않는다
+- /stop은 기다리지 않고 바로 실행 중인 CLI와 테스트를 끈다
+- 단계 작업이 끝나면 결과를 내부 이벤트(StageSucceeded, TestsFinished 등)로 넣어 다음 상태로 간다
+
+이 파일은 입력·전이·효과 배분과 의견 단계를 맡고, 설계부터 merge까지의 단계 작업은
+`bot.workflow.work.WorkStages`에 있다. 볼트 쓰기와 문서 반영은 Phase 3이다.
 """
 
 import asyncio
 import logging
 import uuid
-from collections.abc import Coroutine, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Generic, TypeVar
 
-from bot.agents.base import AgentName, AgentRequest, AgentRunner, RunStatus, Stage
+from pydantic import BaseModel
+
+from bot.agents.base import AgentName, AgentRequest, AgentRunner, Mode, RunStatus, Stage
 from bot.prompts import (
     DISPLAY_NAMES,
     HistoryEntry,
@@ -32,46 +37,91 @@ from bot.workflow.chat import Attachment, Author, ChatIO
 from bot.workflow.mentions import Moment, should_mention
 from bot.workflow.state import (
     BOTH_AGENTS,
+    ApplyTypeLabel,
     CancelAgentRuns,
+    CleanupStopped,
+    ClearNeedsHuman,
     Command,
     CommandName,
     CreateIssue,
     Effect,
     Event,
+    FinishMerged,
+    Limits,
+    MarkNeedsHuman,
+    MarkReady,
     NoticeCode,
     PostCreated,
     PostNotice,
+    PublishPr,
     RequestDebate,
     RequestOpinions,
+    RunTests,
+    StageFailed,
     StartDesign,
+    StartFix,
+    StartImplement,
+    StartReview,
     TaskState,
     WriteVaultDecision,
     ZeroMessage,
     start_task,
     transition,
 )
+from bot.workflow.work import WorkStages
 
 log = logging.getLogger(__name__)
 
-# Phase 2에서 실행할 /decide 효과
-_DEFERRED_EFFECTS = (CreateIssue, WriteVaultDecision, StartDesign)
+M = TypeVar("M", bound=BaseModel)
+Outcome = tuple[Event, NewEvent]
+Verify = Callable[[Any], Awaitable[list[str]]]
+
 _HISTORY_KINDS = {EventKind.MESSAGE, EventKind.OPINION, EventKind.DEBATE, EventKind.DECISION}
+# 재시작 시 NEEDS_HUMAN으로 보내는 진행 중 단계 (Q8). OPINIONS는 안내만 한다
+RUNNING_STATES = {
+    TaskState.DESIGNING,
+    TaskState.IMPLEMENTING,
+    TaskState.TESTING,
+    TaskState.REVIEWING,
+    TaskState.FIXING,
+}
 
 
 @dataclass(frozen=True)
-class _Answer:
-    """에이전트 한 번의 응답 결과. opinion이 없으면 형식 오류이거나 실행 실패다."""
+class ProjectContext:
+    """프로젝트 하나의 실행 정보. github·feature_dir가 없으면 그 기능을 쓰는 단계는 실패한다."""
+
+    repo: Path
+    base_branch: str = "develop"
+    test_command: tuple[str, ...] = ()
+    github: Any = None  # GitHubClient 또는 테스트용 FakeGitHub
+    feature_dir: Path | None = None  # 볼트 `기능/` 폴더. 읽기만 한다 (설계 대상 기능 검증)
+
+    def feature_names(self) -> set[str] | None:
+        if self.feature_dir is None or not self.feature_dir.is_dir():
+            return None
+        return {path.stem for path in self.feature_dir.glob("*.md")}
+
+
+@dataclass(frozen=True)
+class _Answer(Generic[M]):
+    """에이전트 한 번의 응답 결과. result가 없으면 형식 오류이거나 실행 실패다."""
 
     agent: AgentName
-    opinion: Opinion | None
+    result: M | None
     raw: str = ""
     error: str = ""
     status: RunStatus = RunStatus.OK
     log_path: str = ""
+    session_id: str | None = None
 
     @property
     def failed_to_run(self) -> bool:
         return self.status is not RunStatus.OK
+
+    @property
+    def opinion(self) -> Any:
+        return self.result
 
 
 @dataclass(frozen=True)
@@ -83,23 +133,38 @@ class _Outgoing:
     ops_alert: str = ""  # 비어 있지 않으면 #zerosync-ops에도 알린다
 
 
-class Engine:
+@dataclass
+class _Running:
+    tests: dict[int, str] = field(default_factory=dict)  # 작업 → 실행 중인 테스트 run_id
+
+
+class Engine(WorkStages):
     def __init__(
         self,
         repo: Repository,
         chat: ChatIO,
         runners: Mapping[AgentName, AgentRunner],
-        repos: Mapping[str, Path],
+        projects: Mapping[str, ProjectContext],
         *,
         timeout_sec: float,
+        git: Any = None,
+        tests: Any = None,
+        limits: Limits | None = None,
+        worktrees_dir: Path | None = None,
+        thread_url: Callable[[str], str | None] | None = None,
     ):
-        """repos는 프로젝트 키 → 앱 저장소 경로. 의견 단계의 에이전트는 이 폴더에서 읽기만 한다."""
         self._repo = repo
         self._chat = chat
         self._runners = runners
-        self._repos = repos
+        self._projects = projects
         self._timeout = timeout_sec
+        self._git = git
+        self._tests = tests
+        self._limits = limits or Limits()
+        self._worktrees = worktrees_dir or Path.home() / ".zerosync" / "worktrees"
+        self._thread_url = thread_url or (lambda thread: None)
         self._task_locks: dict[int, asyncio.Lock] = {}
+        self._running = _Running()
 
     # 입력
 
@@ -107,7 +172,7 @@ class Engine:
         self, *, project: str, thread: str, title: str, text: str
     ) -> TaskRecord | None:
         """포럼 게시글 → 작업 생성 → 첫 의견. 이미 있는 게시글이면 무시한다."""
-        if project not in self._repos:
+        if project not in self._projects:
             raise ValueError(f"알 수 없는 프로젝트: {project}")
         if await self._repo.find_task_by_thread(thread) is not None:
             return None
@@ -141,8 +206,13 @@ class Engine:
         task = await self._repo.find_task_by_thread(thread)
         if task is None:
             return
+        await self._advance(task.id, event, record)
+
+    async def _advance(self, task_id: int, event: Event, record: NewEvent) -> None:
+        """현재 상태로 전이를 계산해 저장하고 효과를 실행한다."""
+        task = await self._repo.get_task(task_id)
         try:
-            result = transition(task, event)
+            result = transition(task, event, self._limits)
         except NotImplementedError:
             await self._repo.add_event(task.id, record)
             await self._notice(task, NoticeCode.NOT_IMPLEMENTED, f"현재 상태: {task.state}")
@@ -157,15 +227,16 @@ class Engine:
             )
         except StaleStateError:
             # 그 사이 다른 입력이 상태를 바꿨다. 바뀐 상태 기준으로 다시 판단한다
-            await self._handle(thread, event, record)
+            await self._advance(task_id, event, record)
             return
         await self._run_effects(task, result.effects)
 
     async def recover_interrupted(self) -> None:
-        """재시작 전에 끝나지 않은 에이전트 실행을 정리한다 (SPEC 3.4, Q8).
+        """재시작 전에 끝나지 않은 작업을 정리한다 (SPEC 3.4, Q8).
 
-        중간 결과는 신뢰하지 않는다. OPINIONS는 실패 안내 후 그대로 두고(다시 질문하면 재요청),
-        그 밖의 진행 중 단계는 NEEDS_HUMAN으로 보낸다 (2026-10-10 Zero 결정).
+        중간 결과는 신뢰하지 않는다. 남은 에이전트 실행은 error로 닫는다.
+        OPINIONS는 실패 안내 후 그대로 두고(다시 질문하면 재요청), 진행 중 단계(설계·구현·
+        테스트·리뷰·수정)는 NEEDS_HUMAN으로 보낸다 (2026-10-10 Zero 결정).
         """
         by_task: dict[int, list[str]] = {}
         for run in await self._repo.list_running_agent_runs():
@@ -174,11 +245,11 @@ class Engine:
             )
             by_task.setdefault(run.task_id, []).append(run.agent)
 
-        for task_id, agents in by_task.items():
-            task = await self._repo.get_task(task_id)
-            if task.state.is_terminal:
-                continue
+        for task in await self._repo.list_tasks(RUNNING_STATES | {TaskState.OPINIONS}):
+            agents = by_task.get(task.id, [])
             if task.state is TaskState.OPINIONS:
+                if not agents:
+                    continue
                 names = ", ".join(DISPLAY_NAMES[agent] for agent in sorted(set(agents)))
                 await self._repo.add_event(
                     task.id,
@@ -204,45 +275,117 @@ class Engine:
                     render_notice(NoticeCode.INTERRUPTED),
                     mention=should_mention(Moment.NEEDS_HUMAN),
                 )
+                await self._label_needs_human(task, add=True)
             await self._chat.notify_ops(
-                f"[{task.project}] 작업 {task.id}: 봇 재시작으로 실행 {len(agents)}건을 중단했다 "
-                f"(상태 {task.state})",
+                f"[{task.project}] 작업 {task.id}: 봇 재시작으로 중단했다 "
+                f"(상태 {task.state}, 중단한 실행 {len(agents)}건)",
                 mention=should_mention(Moment.BOT_ERROR),
             )
 
     # 효과
 
     async def _run_effects(self, task: TaskRecord, effects: Sequence[Effect]) -> None:
-        deferred = False
         for effect in effects:
             if isinstance(effect, CancelAgentRuns):
                 await self._cancel_runs(task.id)
             elif isinstance(effect, PostNotice):
                 await self._notice(task, effect.code, effect.detail)
             elif isinstance(effect, RequestOpinions):
-                await self._serialized(task, self._opinions(task, effect))
+                await self._serialized(
+                    task.id, TaskState.OPINIONS, lambda e=effect: self._opinions(task, e)
+                )
             elif isinstance(effect, RequestDebate):
-                await self._serialized(task, self._debate(task))
-            elif isinstance(effect, _DEFERRED_EFFECTS):
-                deferred = True
+                await self._serialized(task.id, TaskState.OPINIONS, lambda: self._debate(task))
+            elif isinstance(effect, CreateIssue):
+                await self._stage(task.id, TaskState.DESIGNING, lambda: self._create_issue(task.id))
+            elif isinstance(effect, WriteVaultDecision):
+                pass  # 볼트 결정 노트는 Phase 3. Issue 생성 안내에 함께 알린다
+            elif isinstance(effect, StartDesign):
+                await self._stage(
+                    task.id, TaskState.DESIGNING, lambda e=effect: self._design(task.id, e.revision)
+                )
+            elif isinstance(effect, StartImplement):
+                await self._stage(task.id, TaskState.IMPLEMENTING, lambda: self._implement(task.id))
+            elif isinstance(effect, RunTests):
+                await self._stage(task.id, TaskState.TESTING, lambda: self._run_tests(task.id))
+            elif isinstance(effect, PublishPr):
+                await self._stage(task.id, TaskState.REVIEWING, lambda: self._publish_pr(task.id))
+            elif isinstance(effect, StartReview):
+                await self._stage(task.id, TaskState.REVIEWING, lambda: self._review(task.id))
+            elif isinstance(effect, StartFix):
+                await self._stage(
+                    task.id, TaskState.FIXING, lambda e=effect: self._fix(task.id, e.source)
+                )
+            elif isinstance(effect, ApplyTypeLabel):
+                await self._side_effect(task.id, self._apply_type_label)
+            elif isinstance(effect, MarkReady):
+                await self._side_effect(task.id, self._mark_ready)
+            elif isinstance(effect, MarkNeedsHuman):
+                await self._mark_needs_human(task.id, effect.reason)
+            elif isinstance(effect, ClearNeedsHuman):
+                await self._side_effect(task.id, lambda t: self._label_needs_human(t, add=False))
+            elif isinstance(effect, FinishMerged):
+                await self._side_effect(task.id, self._finish_merged)
+            elif isinstance(effect, CleanupStopped):
+                await self._side_effect(task.id, self._cleanup_stopped)
             else:  # pragma: no cover - 새 효과 타입을 추가하면 여기서 드러난다
                 raise TypeError(f"처리하지 않은 효과: {effect!r}")
-        if deferred:
-            await self._notice(task, NoticeCode.DECISION_RECORDED)
 
-    async def _serialized(self, task: TaskRecord, work: Coroutine[Any, Any, None]) -> None:
-        lock = self._task_locks.setdefault(task.id, asyncio.Lock())
+    async def _serialized(
+        self, task_id: int, expected: TaskState, work: Callable[[], Awaitable[Any]]
+    ) -> Any:
+        """작업마다 하나씩 실행한다. 시작 직전 상태가 expected가 아니면 실행하지 않는다."""
+        lock = self._task_locks.setdefault(task_id, asyncio.Lock())
         async with lock:
-            current = await self._repo.get_task(task.id)
-            if current.state is not TaskState.OPINIONS:
-                # 기다리는 사이 /stop 또는 /decide로 단계가 바뀌었다
-                work.close()
-                return
-            await work
+            current = await self._repo.get_task(task_id)
+            if current.state is not expected:
+                return None
+            return await work()
+
+    async def _stage(
+        self, task_id: int, expected: TaskState, work: Callable[[], Awaitable[Outcome | None]]
+    ) -> None:
+        """단계 작업을 실행하고 결과 이벤트로 다음 상태로 간다. 예외는 단계 실패로 바꾼다."""
+
+        async def guarded() -> Outcome | None:
+            try:
+                return await work()
+            except Exception as error:
+                log.exception("작업 %s 단계 실패", task_id)
+                reason = f"{type(error).__name__}: {error}"
+                task = await self._repo.get_task(task_id)
+                await self._chat.notify_ops(
+                    f"[{task.project}] 작업 {task.id} {task.state} 중 오류: {reason}",
+                    mention=should_mention(Moment.BOT_ERROR),
+                )
+                return StageFailed(reason), NewEvent(
+                    Actor.BOT, EventKind.ERROR, {"state": task.state.value, "reason": reason}
+                )
+
+        outcome = await self._serialized(task_id, expected, guarded)
+        if outcome is not None:
+            await self._advance(task_id, *outcome)
+
+    async def _side_effect(
+        self, task_id: int, work: Callable[[TaskRecord], Awaitable[None]]
+    ) -> None:
+        """GitHub 라벨·정리처럼 실패해도 상태를 바꾸지 않는 작업. 실패는 운영 채널에 알린다."""
+        task = await self._repo.get_task(task_id)
+        try:
+            await work(task)
+        except Exception as error:
+            log.exception("작업 %s 부수 작업 실패", task_id)
+            await self._chat.notify_ops(
+                f"[{task.project}] 작업 {task.id} 처리 중 오류: {type(error).__name__}: {error}",
+                mention=should_mention(Moment.BOT_ERROR),
+            )
 
     async def _cancel_runs(self, task_id: int) -> None:
         for run in await self._repo.list_running_agent_runs(task_id):
             await self._runners[run.agent].cancel(run.id)
+        test_run = self._running.tests.get(task_id)
+        if test_run is not None and self._tests is not None:
+            await self._tests.cancel(test_run)
 
     async def _notice(self, task: TaskRecord, code: NoticeCode, detail: str = "") -> None:
         await self._chat.post(
@@ -250,6 +393,97 @@ class Engine:
             "bot",
             render_notice(code, detail),
             mention=should_mention(Moment.NOTICE),
+        )
+
+    async def _say(self, task: TaskRecord, text: str, moment: Moment = Moment.NOTICE) -> str:
+        return await self._chat.post(
+            task.discord_thread, "bot", text, mention=should_mention(moment)
+        )
+
+    # 에이전트 호출
+
+    async def _ask(
+        self,
+        task: TaskRecord,
+        agent: AgentName,
+        stage: Stage,
+        prompt: str,
+        *,
+        model: type[M] = Opinion,  # type: ignore[assignment]
+        mode: Mode = "read_only",
+        cwd: Path | None = None,
+        context: dict[str, Any] | None = None,
+        resume: str | None = None,
+        verify: Verify | None = None,
+    ) -> _Answer[M]:
+        """에이전트를 부르고 스키마로 검증한다.
+
+        형식 오류이거나 verify가 문제를 찾으면 그 내용을 붙여 1회 재요청한다 (운영 규약 2.1).
+        """
+        call = dict(model=model, mode=mode, cwd=cwd, context=context, verify=verify)
+        answer = await self._attempt(task, agent, stage, prompt, resume=resume, **call)
+        if answer.result is not None or answer.failed_to_run:
+            return answer
+        retry = with_format_error(prompt, answer.error)
+        return await self._attempt(
+            task, agent, stage, retry, resume=answer.session_id or resume, **call
+        )
+
+    async def _attempt(
+        self,
+        task: TaskRecord,
+        agent: AgentName,
+        stage: Stage,
+        prompt: str,
+        *,
+        model: type[M],
+        mode: Mode,
+        cwd: Path | None,
+        context: dict[str, Any] | None,
+        resume: str | None,
+        verify: Verify | None,
+    ) -> _Answer[M]:
+        run_id = f"t{task.id}-{agent}-{stage.value}-{uuid.uuid4().hex[:8]}"
+        await self._repo.start_agent_run(run_id, task_id=task.id, agent=agent, stage=stage)
+        request = AgentRequest(
+            run_id=run_id,
+            task_id=task.id,
+            stage=stage,
+            prompt=prompt,
+            cwd=cwd or self._projects[task.project].repo,
+            mode=mode,
+            timeout_sec=self._timeout,
+            resume_session=resume if agent == "claude" else None,
+            output_schema=model.model_json_schema(),
+        )
+        try:
+            result = await self._runners[agent].run(request)
+        except BaseException:
+            await self._repo.finish_agent_run(
+                run_id, status=RunStatus.ERROR, exit_code=None, log_path=None
+            )
+            raise
+
+        log_path = str(result.log_path)
+        status: RunStatus | str = result.status
+        parsed, error = None, ""
+        if result.status is RunStatus.OK:
+            try:
+                parsed = parse_agent_output(result.stdout, model, context)
+                problems = await verify(parsed) if verify is not None else []
+                if problems:
+                    parsed = None
+                    error = "출력은 형식에 맞지만 작업 결과에 문제가 있다:\n" + "\n".join(
+                        f"- {problem}" for problem in problems
+                    )
+                    status = INVALID_OUTPUT
+            except AgentOutputError as e:
+                status, error = INVALID_OUTPUT, str(e)
+        await self._repo.finish_agent_run(
+            run_id, status=status, exit_code=result.exit_code, log_path=log_path
+        )
+        return _Answer(
+            agent, parsed, result.stdout, error, result.status, log_path, result.session_id
         )
 
     # 의견
@@ -296,56 +530,10 @@ class Engine:
         )
         await self._publish(task, answers, EventKind.DEBATE, {}, heading="반박")
 
-    async def _ask(self, task: TaskRecord, agent: AgentName, stage: Stage, prompt: str) -> _Answer:
-        """에이전트를 부르고 의견으로 검증한다.
-
-        형식 오류면 오류를 붙여 1회 재요청한다 (운영 규약 2.1).
-        """
-        answer = await self._attempt(task, agent, stage, prompt)
-        if answer.opinion is not None or answer.failed_to_run:
-            return answer
-        return await self._attempt(task, agent, stage, with_format_error(prompt, answer.error))
-
-    async def _attempt(
-        self, task: TaskRecord, agent: AgentName, stage: Stage, prompt: str
-    ) -> _Answer:
-        run_id = f"t{task.id}-{agent}-{stage.value}-{uuid.uuid4().hex[:8]}"
-        await self._repo.start_agent_run(run_id, task_id=task.id, agent=agent, stage=stage)
-        request = AgentRequest(
-            run_id=run_id,
-            task_id=task.id,
-            stage=stage,
-            prompt=prompt,
-            cwd=self._repos[task.project],
-            mode="read_only",
-            timeout_sec=self._timeout,
-            output_schema=Opinion.model_json_schema(),
-        )
-        try:
-            result = await self._runners[agent].run(request)
-        except BaseException:
-            await self._repo.finish_agent_run(
-                run_id, status=RunStatus.ERROR, exit_code=None, log_path=None
-            )
-            raise
-
-        log_path = str(result.log_path)
-        status: RunStatus | str = result.status
-        opinion, error = None, ""
-        if result.status is RunStatus.OK:
-            try:
-                opinion = parse_agent_output(result.stdout, Opinion)
-            except AgentOutputError as e:
-                status, error = INVALID_OUTPUT, str(e)
-        await self._repo.finish_agent_run(
-            run_id, status=status, exit_code=result.exit_code, log_path=log_path
-        )
-        return _Answer(agent, opinion, result.stdout, error, result.status, log_path)
-
     async def _publish(
         self,
         task: TaskRecord,
-        answers: Sequence[_Answer],
+        answers: Sequence[_Answer[Opinion]],
         kind: EventKind,
         payload: Mapping[str, object],
         *,
@@ -379,15 +567,15 @@ class Engine:
     def _outgoing(
         self,
         task: TaskRecord,
-        answer: _Answer,
+        answer: _Answer[Opinion],
         kind: EventKind,
         payload: Mapping[str, object],
         heading: str,
     ) -> _Outgoing:
         actor = Actor(answer.agent)
-        if answer.opinion is not None:
-            rendered = render_opinion_post(answer.opinion, heading=heading)
-            data = {**payload, "opinion": answer.opinion.model_dump(mode="json")}
+        if answer.result is not None:
+            rendered = render_opinion_post(answer.result, heading=heading)
+            data = {**payload, "opinion": answer.result.model_dump(mode="json")}
             return _Outgoing(
                 answer.agent, rendered.text, rendered.attachments, NewEvent(actor, kind, data)
             )

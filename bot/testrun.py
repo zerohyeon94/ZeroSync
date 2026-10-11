@@ -45,6 +45,13 @@ class TestReport:
     def passed(self) -> bool:
         return self.status is RunStatus.OK and not self.failures
 
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "TestReport":
+        names = {name for name in cls.__dataclass_fields__}
+        data = {key: value for key, value in payload.items() if key in names}
+        data["status"] = RunStatus(data["status"])
+        return cls(**data)
+
     def to_payload(self) -> dict[str, Any]:
         data = asdict(self)
         data["status"] = self.status.value
