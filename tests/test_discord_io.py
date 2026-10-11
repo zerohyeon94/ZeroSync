@@ -168,7 +168,7 @@ def test_notify_ops():
 def test_render_status_and_ping():
     task = TaskRecord(
         id=3,
-        project="gagessi",
+        project="gagaessi",
         discord_thread="500",
         title="예산 배너",
         state=TaskState.NEEDS_HUMAN,
@@ -204,10 +204,10 @@ def bot(tmp_path):
     projects = tmp_path / "projects.yaml"
     projects.write_text(
         "projects:\n"
-        "  gagessi:\n"
+        "  gagaessi:\n"
         f'    forum_channel_id: "{FORUM}"\n'
         "    repo: /repo\n"
-        "    github: owner/Gagessi\n"
+        "    github: owner/GagaeSsi\n"
         "    test: swift test\n"
         "    vault_dir: d\n    vault_hub: h.md\n    vault_tag: brain/g\n    vault_slug: g\n"
         "paths:\n  vault_projects: /vault\n",
@@ -266,7 +266,10 @@ def test_forum_post_and_reply_reach_engine(bot):
 
     run(main())
     assert bot.calls == [
-        ("post", {"project": "gagessi", "thread": "500", "title": "예산 배너", "text": EMPTY_POST}),
+        (
+            "post",
+            {"project": "gagaessi", "thread": "500", "title": "예산 배너", "text": EMPTY_POST},
+        ),
         ("message", "500", "추가 질문", "501"),
     ]
 
@@ -341,3 +344,27 @@ def test_intents_include_message_content(bot):
     assert isinstance(bot.guild_ref, discord.Object) and bot.guild_ref.id == 1
     names = {command.name for command in bot.tree.get_commands(guild=bot.guild_ref)}
     assert names == {"debate", "decide", "stop", "status", "ping"}
+
+
+def test_startup_failure_alerts_ops_and_closes(bot):
+    alerts, closed = [], []
+
+    async def notify_ops(text, *, mention=False):
+        alerts.append((text, mention))
+
+    async def prepare():
+        raise RuntimeError("gagaessi의 forum_channel_id가 포럼 채널이 아니다 (#일반, 종류 text)")
+
+    async def close():
+        closed.append(True)
+
+    bot.chat.notify_ops = notify_ops
+    bot._prepare_webhooks = prepare
+    bot.close = close
+    run(bot.on_ready())
+
+    assert closed == [True]
+    assert isinstance(bot.startup_error, RuntimeError)
+    ((text, mention),) = alerts
+    assert "시작 실패" in text and "#일반" in text
+    assert mention is True

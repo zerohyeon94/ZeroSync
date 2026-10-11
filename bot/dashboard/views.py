@@ -1,0 +1,375 @@
+"""대시보드 HTML.
+
+모든 데이터 값은 이스케이프한다 (에이전트 출력과 Zero 메시지가 그대로 들어온다).
+"""
+
+from collections.abc import Iterable, Mapping, Sequence
+from datetime import datetime
+from html import escape
+from typing import Any
+from urllib.parse import quote, urlencode
+
+from bot.dashboard.queries import EventRow, ProjectSummary, RunRow, StageStat, TaskRow
+from bot.prompts import DISPLAY_NAMES
+from bot.render import render_opinion
+from bot.schemas import Opinion
+
+STATUS_LABELS = {
+    "running": "실행 중",
+    "ok": "성공",
+    "invalid_output": "형식 오류",
+    "timeout": "시간 초과",
+    "cancelled": "취소",
+    "error": "오류",
+}
+STAGE_LABELS = {
+    "opinion": "의견",
+    "debate": "반박",
+    "design": "설계",
+    "implement": "구현",
+    "fix": "수정",
+    "review": "리뷰",
+    "doc_sync": "문서 반영",
+}
+KIND_LABELS = {
+    "message": "메시지",
+    "opinion": "의견",
+    "debate": "반박",
+    "decision": "결정",
+    "command": "명령",
+    "error": "오류",
+}
+_BAD_STATUSES = {"invalid_output", "timeout", "error"}
+
+_CSS = """
+:root { --bg:#fafafa; --fg:#1d1d1f; --muted:#6e6e73; --line:#e3e3e8; --card:#fff;
+  --accent:#3a5bd9; --bad:#c0392b; --ok:#2e7d4f; --warn:#b26a00; }
+@media (prefers-color-scheme: dark) { :root { --bg:#161618; --fg:#ececf0; --muted:#9a9aa2;
+  --line:#2c2c31; --card:#1f1f23; --accent:#8aa4ff; --bad:#ff7b6b; --ok:#6fcf97; --warn:#f2b45c; } }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--fg);
+  font:14px/1.5 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif; }
+header { display:flex; gap:20px; align-items:baseline; padding:14px 24px;
+  border-bottom:1px solid var(--line); background:var(--card); }
+header strong { font-size:16px; }
+header a { color:var(--muted); text-decoration:none; }
+header a.on { color:var(--fg); font-weight:600; }
+main { padding:20px 24px; max-width:1200px; }
+h1 { font-size:20px; margin:0 0 16px; } h2 { font-size:16px; margin:28px 0 10px; }
+a { color:var(--accent); }
+table { border-collapse:collapse; width:100%; background:var(--card);
+  border:1px solid var(--line); }
+th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--line);
+  vertical-align:top; }
+th { color:var(--muted); font-weight:500; font-size:12px; }
+td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+.muted { color:var(--muted); } .bad { color:var(--bad); } .ok { color:var(--ok); }
+.warn { color:var(--warn); }
+.cards { display:flex; flex-wrap:wrap; gap:12px; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px 16px;
+  min-width:220px; }
+.card .big { font-size:24px; font-weight:600; }
+form.filters { display:flex; gap:8px; align-items:center; margin-bottom:12px; }
+select, button { font:inherit; padding:3px 6px; }
+.event { background:var(--card); border:1px solid var(--line); border-radius:8px;
+  padding:10px 14px; margin-bottom:10px; }
+.event .meta { color:var(--muted); font-size:12px; margin-bottom:6px; }
+pre { white-space:pre-wrap; word-break:break-word; margin:0;
+  font:13px/1.5 ui-monospace, Menlo, monospace; }
+"""
+
+
+def _e(value: object) -> str:
+    return escape("" if value is None else str(value))
+
+
+def local_time(iso: str | None) -> str:
+    if not iso:
+        return "-"
+    return datetime.fromisoformat(iso).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def seconds(value: float | None) -> str:
+    return "-" if value is None else f"{value:.1f}초"
+
+
+def _status(status: str) -> str:
+    css = "bad" if status in _BAD_STATUSES else "ok" if status == "ok" else "warn"
+    return f'<span class="{css}">{_e(STATUS_LABELS.get(status, status))}</span>'
+
+
+def _counts(counts: Mapping[str, int], labels: Mapping[str, str] | None = None) -> str:
+    if not counts:
+        return '<span class="muted">-</span>'
+    return ", ".join(
+        f"{_e((labels or {}).get(key, key))} {count}" for key, count in sorted(counts.items())
+    )
+
+
+def _name(agent: str) -> str:
+    return _e(DISPLAY_NAMES.get(agent, agent))
+
+
+def _speaker(actor: str) -> str:
+    return "Zero" if actor == "zero" else _name(actor)
+
+
+def page(title: str, body: str, *, active: str = "") -> str:
+    nav = "".join(
+        f'<a href="{href}" class="{"on" if key == active else ""}">{label}</a>'
+        for key, href, label in (
+            ("summary", "/", "요약"),
+            ("tasks", "/tasks", "작업"),
+            ("runs", "/runs", "실행 기록"),
+        )
+    )
+    return (
+        '<!doctype html><html lang="ko"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>{_e(title)} · ZeroSync</title><style>{_CSS}</style></head>"
+        f"<body><header><strong>ZeroSync</strong>{nav}</header><main>{body}</main></body></html>"
+    )
+
+
+def _table(
+    headers: Sequence[str],
+    rows: Iterable[Sequence[str]],
+    numeric: frozenset[int] | set[int] = frozenset(),
+) -> str:
+    head = "".join(
+        f'<th class="{"num" if i in numeric else ""}">{_e(h)}</th>' for i, h in enumerate(headers)
+    )
+    body = "".join(
+        "<tr>"
+        + "".join(
+            f'<td class="{"num" if i in numeric else ""}">{cell}</td>' for i, cell in enumerate(row)
+        )
+        + "</tr>"
+        for row in rows
+    )
+    if not body:
+        body = f'<tr><td colspan="{len(headers)}" class="muted">기록이 없다</td></tr>'
+    return f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+
+
+def _filters(
+    action: str, selects: Sequence[tuple[str, str, Sequence[tuple[str, str]], str]]
+) -> str:
+    parts = []
+    for name, label, options, current in selects:
+        opts = '<option value="">전체</option>' + "".join(
+            f'<option value="{_e(v)}"{" selected" if v == current else ""}>{_e(t)}</option>'
+            for v, t in options
+        )
+        parts.append(f'<label>{_e(label)} <select name="{_e(name)}">{opts}</select></label>')
+    return f'<form class="filters" action="{action}">{"".join(parts)}<button>보기</button></form>'
+
+
+def _task_link(task_id: int, title: str) -> str:
+    return f'<a href="/tasks/{task_id}">#{task_id} {_e(title)}</a>'
+
+
+# 화면
+
+
+def summary_page(summaries: Sequence[ProjectSummary], stats: Sequence[StageStat]) -> str:
+    total_tasks = sum(s.tasks for s in summaries)
+    total_runs = sum(s.runs for s in summaries)
+    bad_runs = sum(n for s in summaries for k, n in s.by_status.items() if k in _BAD_STATUSES)
+    cards = (
+        f'<div class="card"><div class="muted">작업</div><div class="big">{total_tasks}</div></div>'
+        '<div class="card"><div class="muted">에이전트 실행</div>'
+        f'<div class="big">{total_runs}</div></div>'
+        f'<div class="card"><div class="muted">실패 (형식 오류·시간 초과·오류)</div>'
+        f'<div class="big {"bad" if bad_runs else ""}">{bad_runs}</div></div>'
+    )
+    projects = _table(
+        ["프로젝트", "작업", "상태별", "실행", "결과별"],
+        (
+            (
+                f'<a href="/tasks?{urlencode({"project": s.project})}">{_e(s.project)}</a>',
+                str(s.tasks),
+                _counts(s.by_state),
+                f'<a href="/runs?{urlencode({"project": s.project})}">{s.runs}</a>',
+                _counts(s.by_status, STATUS_LABELS),
+            )
+            for s in summaries
+        ),
+        numeric={1, 3},
+    )
+    stages = _table(
+        ["에이전트", "단계", "실행", "평균 소요 (성공)", "결과별"],
+        (
+            (
+                _name(s.agent),
+                _e(STAGE_LABELS.get(s.stage, s.stage)),
+                str(s.runs),
+                seconds(s.avg_sec),
+                _counts(s.by_status, STATUS_LABELS),
+            )
+            for s in stats
+        ),
+        numeric={2, 3},
+    )
+    body = (
+        f'<h1>요약</h1><div class="cards">{cards}</div>'
+        f"<h2>프로젝트별</h2>{projects}<h2>에이전트·단계별</h2>{stages}"
+    )
+    return page("요약", body, active="summary")
+
+
+def tasks_page(
+    tasks: Sequence[TaskRow],
+    *,
+    projects: Sequence[str],
+    states: Sequence[str],
+    project: str,
+    state: str,
+    discord_url: Any,
+) -> str:
+    filters = _filters(
+        "/tasks",
+        [
+            ("project", "프로젝트", [(p, p) for p in projects], project),
+            ("state", "상태", [(s, s) for s in states], state),
+        ],
+    )
+    rows = (
+        (
+            _task_link(t.id, t.title),
+            _e(t.project),
+            _e(t.state),
+            str(t.opinion_rounds),
+            str(t.runs),
+            local_time(t.created_at),
+            local_time(t.updated_at),
+            _discord_link(discord_url(t.discord_thread)),
+        )
+        for t in tasks
+    )
+    table = _table(
+        ["작업", "프로젝트", "상태", "질문 수", "실행", "생성", "마지막 변경", "Discord"],
+        rows,
+        numeric={3, 4},
+    )
+    return page("작업", f"<h1>작업 {len(tasks)}개</h1>{filters}{table}", active="tasks")
+
+
+def _discord_link(url: str | None) -> str:
+    return f'<a href="{_e(url)}">게시글</a>' if url else '<span class="muted">-</span>'
+
+
+def _event_body(event: EventRow) -> str:
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    if event.kind in ("opinion", "debate") and "opinion" in payload:
+        heading = "반박" if event.kind == "debate" else ""
+        text = render_opinion(Opinion.model_validate(payload["opinion"]), heading=heading)
+        return f"<pre>{_e(text.replace('**', ''))}</pre>"
+    if event.kind == "message":
+        title = payload.get("title")
+        head = f"<strong>{_e(title)}</strong>\n" if title else ""
+        return f"<pre>{head}{_e(payload.get('text', ''))}</pre>"
+    if event.kind == "decision":
+        return f"<pre>/decide {_e(payload.get('text', ''))}</pre>"
+    if event.kind == "command":
+        return f"<pre>/{_e(payload.get('name', ''))} {_e(payload.get('arg', ''))}</pre>"
+    if event.kind == "error":
+        parts = [f"{k}: {v}" for k, v in payload.items() if k not in ("raw",)]
+        raw = payload.get("raw")
+        extra = f"\n\n원문:\n{raw}" if raw else ""
+        return f'<pre class="bad">{_e(chr(10).join(parts) + extra)}</pre>'
+    return f"<pre>{_e(payload)}</pre>"
+
+
+def task_page(
+    task: TaskRow, events: Sequence[EventRow], runs: Sequence[RunRow], *, discord_url: str | None
+) -> str:
+    facts = _table(
+        [
+            "프로젝트",
+            "상태",
+            "직전 상태",
+            "질문 수",
+            "리뷰 라운드",
+            "테스트 재시도",
+            "생성",
+            "마지막 변경",
+            "Discord",
+        ],
+        [
+            (
+                _e(task.project),
+                _e(task.state),
+                _e(task.prev_state or "-"),
+                str(task.opinion_rounds),
+                str(task.review_round),
+                str(task.test_retry),
+                local_time(task.created_at),
+                local_time(task.updated_at),
+                _discord_link(discord_url),
+            )
+        ],
+    )
+    timeline = (
+        "".join(
+            f'<div class="event"><div class="meta">{local_time(e.created_at)} · '
+            f"{_speaker(e.actor)} · {_e(KIND_LABELS.get(e.kind, e.kind))}"
+            f"</div>{_event_body(e)}</div>"
+            for e in events
+        )
+        or '<p class="muted">기록이 없다</p>'
+    )
+    body = (
+        f"<h1>#{task.id} {_e(task.title)}</h1>{facts}"
+        f"<h2>흐름</h2>{timeline}"
+        f"<h2>에이전트 실행 {len(runs)}회</h2>{_runs_table(runs, with_task=False)}"
+    )
+    return page(f"#{task.id}", body, active="tasks")
+
+
+def _runs_table(runs: Sequence[RunRow], *, with_task: bool = True) -> str:
+    headers = ["시작", "에이전트", "단계", "결과", "소요", "종료 코드", "로그"]
+    if with_task:
+        headers.insert(1, "작업")
+        headers.insert(2, "프로젝트")
+    rows = []
+    for r in runs:
+        log = (
+            f'<a href="/runs/{quote(r.id, safe="")}/log">보기</a>'
+            if r.log_path
+            else '<span class="muted">-</span>'
+        )
+        row = [
+            local_time(r.started_at),
+            _name(r.agent),
+            _e(STAGE_LABELS.get(r.stage, r.stage)),
+            _status(r.status),
+            seconds(r.duration_sec),
+            _e("-" if r.exit_code is None else r.exit_code),
+            log,
+        ]
+        if with_task:
+            row.insert(1, _task_link(r.task_id, r.title))
+            row.insert(2, _e(r.project))
+        rows.append(row)
+    numeric = {6, 7} if with_task else {4, 5}
+    return _table(headers, rows, numeric=numeric)
+
+
+def runs_page(
+    runs: Sequence[RunRow], *, projects: Sequence[str], project: str, status: str, limit: int
+) -> str:
+    filters = _filters(
+        "/runs",
+        [
+            ("project", "프로젝트", [(p, p) for p in projects], project),
+            ("status", "결과", list(STATUS_LABELS.items()), status),
+        ],
+    )
+    note = f'<p class="muted">최근 {limit}건까지 보여 준다</p>' if len(runs) >= limit else ""
+    body = f"<h1>실행 기록</h1>{filters}{note}{_runs_table(runs)}"
+    return page("실행 기록", body, active="runs")
+
+
+def message_page(title: str, message: str, status_class: str = "muted") -> str:
+    return page(title, f'<h1>{_e(title)}</h1><p class="{status_class}">{_e(message)}</p>')

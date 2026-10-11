@@ -41,7 +41,7 @@ def zero(text, kind=EventKind.MESSAGE):
 async def new_task(repo, thread="thread-1"):
     result = start_task(PostCreated("예산 배너", "배너를 띄우자"))
     return await repo.create_task(
-        project="gagessi",
+        project="gagaessi",
         discord_thread=thread,
         title="예산 배너",
         state=result.state,

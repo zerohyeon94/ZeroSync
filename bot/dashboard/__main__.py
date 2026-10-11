@@ -1,0 +1,36 @@
+"""`python -m bot.dashboard [--port 8765]`"""
+
+import argparse
+import sys
+
+from bot.config import ConfigError, load_config
+from bot.dashboard.server import DEFAULT_PORT, HOST, DashboardSettings, serve
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="python -m bot.dashboard", description=__doc__)
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    args = parser.parse_args(argv)
+    try:
+        config = load_config()
+    except ConfigError as error:
+        print(f"설정 오류: {error}", file=sys.stderr)
+        return 1
+    settings = DashboardSettings(
+        db=config.paths.db,
+        runs_dir=config.paths.runs,
+        guild_id=config.secrets.discord_guild_id,
+    )
+    server = serve(settings, args.port)
+    print(f"대시보드: http://{HOST}:{args.port}  (종료: Ctrl-C)", file=sys.stderr)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

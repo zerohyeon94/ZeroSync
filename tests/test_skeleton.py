@@ -27,10 +27,10 @@ def write_projects(tmp_path):
     path = tmp_path / "projects.yaml"
     path.write_text(
         "projects:\n"
-        "  gagessi:\n"
+        "  gagaessi:\n"
         '    forum_channel_id: "100"\n'
         "    repo: /repo\n"
-        "    github: owner/Gagessi\n"
+        "    github: owner/GagaeSsi\n"
         "    test: swift test\n"
         "    vault_dir: d\n"
         "    vault_hub: h.md\n"
@@ -62,7 +62,7 @@ def run_main(tmp_path, environ=ENV, run=None):
 def test_main_loads_config_and_takes_lock(tmp_path, capsys):
     assert run_main(tmp_path) == 0
     err = capsys.readouterr().err
-    assert "gagessi" in err
+    assert "gagaessi" in err
     assert "token-secret-value" not in err
     # 정상 종료 후 락이 풀려 다시 실행할 수 있다
     assert run_main(tmp_path) == 0

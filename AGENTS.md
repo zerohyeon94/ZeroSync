@@ -32,6 +32,7 @@ ZeroSync는 Discord 기반 멀티 에이전트 오케스트레이터(v2)다. Zer
 | `bot/clock.py` | 현재 시각 인터페이스 (테스트에서 고정) | 구현 |
 | `bot/config.py` | `bot/projects.yaml` + `.env` 로더 (pydantic 검증). 예시는 `bot/projects.example.yaml`, `.env.example` | 구현 |
 | `bot/locks.py` | 단일 인스턴스 락 (`flock`) | 구현 (빌드 락은 Phase 2) |
+| `bot/dashboard/` | 로컬 웹 대시보드. `python -m bot.dashboard` → http://127.0.0.1:8765. DB 읽기 전용 | 구현 |
 | `bot/discord_io/` | Discord 입출력 계층(입력 판정 규칙, 웹훅 게시, 슬래시 명령, 클라이언트). 워크플로 로직은 이 계층 밖에 둔다 | 구현 (실제 서버 확인 전) |
 | `tests/` | pytest 테스트. 실제 CLI·Discord·GitHub는 호출하지 않는다. 프롬프트 스냅샷은 `tests/snapshots/` (`UPDATE_SNAPSHOTS=1`로 갱신) | 사용 중 |
 | `scripts/` | 수동 확인 스크립트 (`smoke_cli.py`: 실제 CLI로 러너 확인, 구독 사용량 소모) | 사용 중 |
@@ -65,7 +66,7 @@ v1 메뉴바 앱을 수정할 때만 Xcode 명령을 쓴다. 저장소 루트에
 - 브랜치 이름: `<type>/<Issue번호>-<slug>` (예: `feat/12-vote-schema`). Issue가 없으면 번호 자리에 `0`을 쓴다. `claude/` 접두어는 쓰지 않는다
   - type: `feat`, `fix`, `refactor`, `docs`, `chore`
   - slug: 영문 소문자·숫자와 `-`, 40자 이내
-- 스레드(작업 단위)마다 draft PR 하나를 연다. merge는 Zero가 GitHub에서 Merge commit 방식으로 한다
+- 목표 하나가 최종 완료될 때까지 한 작업 브랜치에 커밋을 모으고, 완료되면 draft PR을 한 번만 연다. 중간 단계마다 PR을 나누지 않는다 (2026-10-11 Zero 결정). merge는 Zero가 GitHub에서 Merge commit 방식으로 한다
 - develop·main에 직접 push하거나 merge하지 않는다. 작업 브랜치에서 push한 뒤에는 force push하지 않는다
 
 ## 커밋 메시지

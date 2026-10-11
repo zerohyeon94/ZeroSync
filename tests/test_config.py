@@ -16,14 +16,14 @@ ENV = {
 }
 
 TEST_LINE = (
-    "    test: xcodebuild test -scheme Gagessi"
+    "    test: xcodebuild test -scheme GagaeSsi"
     " -destination 'platform=iOS Simulator,name=iPhone 16'\n"
 )
 PROJECT = (
     """\
     forum_channel_id: "100"
-    repo: ~/Dev/Gagessi
-    github: owner/Gagessi
+    repo: ~/Dev/GagaeSsi
+    github: owner/GagaeSsi
 """
     + TEST_LINE
     + """\
@@ -36,7 +36,7 @@ PROJECT = (
 
 
 def yaml_text(project=PROJECT, extra=""):
-    return f"projects:\n  gagessi:\n{project}paths:\n  vault_projects: /vault/Projects\n{extra}"
+    return f"projects:\n  gagaessi:\n{project}paths:\n  vault_projects: /vault/Projects\n{extra}"
 
 
 def write(tmp_path, text, name="projects.yaml"):
@@ -58,14 +58,14 @@ def load(tmp_path, text=None, environ=ENV, env_text=None):
 
 def test_loads_project_with_defaults(tmp_path):
     config = load(tmp_path)
-    project = config.projects["gagessi"]
-    assert project.repo == Path.home() / "Dev/Gagessi"
+    project = config.projects["gagaessi"]
+    assert project.repo == Path.home() / "Dev/GagaeSsi"
     assert project.base_branch == "develop"
     assert project.test == (
         "xcodebuild",
         "test",
         "-scheme",
-        "Gagessi",
+        "GagaeSsi",
         "-destination",
         "platform=iOS Simulator,name=iPhone 16",
     )
@@ -82,7 +82,7 @@ def test_test_command_may_be_a_list(tmp_path):
         TEST_LINE,
         "    test: [swift, test]\n",
     )
-    assert load(tmp_path, yaml_text(project)).projects["gagessi"].test == ("swift", "test")
+    assert load(tmp_path, yaml_text(project)).projects["gagaessi"].test == ("swift", "test")
 
 
 def test_overrides_limits_and_paths(tmp_path):
@@ -100,14 +100,14 @@ def test_overrides_limits_and_paths(tmp_path):
 
 def test_project_for_forum(tmp_path):
     config = load(tmp_path)
-    assert config.project_for_forum("100") == "gagessi"
+    assert config.project_for_forum("100") == "gagaessi"
     assert config.project_for_forum("999") is None
 
 
 def test_example_file_is_valid():
     environ = {key: "1" for key in ENV}
     config = load_config(EXAMPLE, Path("/nonexistent/.env"), environ)
-    assert list(config.projects) == ["gagessi"]
+    assert list(config.projects) == ["gagaessi"]
 
 
 def test_env_example_lists_every_key():
@@ -121,14 +121,14 @@ def test_env_example_lists_every_key():
     ("old", "new", "where"),
     [
         ('forum_channel_id: "100"', 'forum_channel_id: "abc"', "forum_channel_id"),
-        ("repo: ~/Dev/Gagessi", "repo: Dev/Gagessi", "repo"),
-        ("github: owner/Gagessi", "github: Gagessi", "github"),
+        ("repo: ~/Dev/GagaeSsi", "repo: Dev/GagaeSsi", "repo"),
+        ("github: owner/GagaeSsi", "github: GagaeSsi", "github"),
         ("vault_slug: gagaessi", 'vault_slug: ""', "vault_slug"),
         ("vault_slug: gagaessi", "vault_slug: gagaessi\n    typo_key: 1", "typo_key"),
     ],
 )
 def test_rejects_invalid_project_field(tmp_path, old, new, where):
-    with pytest.raises(ConfigError, match=f"projects.gagessi.{where}"):
+    with pytest.raises(ConfigError, match=f"projects.gagaessi.{where}"):
         load(tmp_path, yaml_text(PROJECT.replace(old, new)))
 
 
@@ -144,13 +144,13 @@ def test_rejects_bad_test_command(tmp_path, test_value):
         TEST_LINE,
         f"    test: {test_value}\n",
     )
-    with pytest.raises(ConfigError, match="projects.gagessi.test"):
+    with pytest.raises(ConfigError, match="projects.gagaessi.test"):
         load(tmp_path, yaml_text(project))
 
 
 def test_rejects_bad_project_key(tmp_path):
-    with pytest.raises(ConfigError, match="Gagessi"):
-        load(tmp_path, yaml_text().replace("  gagessi:", "  Gagessi:"))
+    with pytest.raises(ConfigError, match="GagaeSsi"):
+        load(tmp_path, yaml_text().replace("  gagaessi:", "  GagaeSsi:"))
 
 
 def test_rejects_duplicate_forum_channel(tmp_path):

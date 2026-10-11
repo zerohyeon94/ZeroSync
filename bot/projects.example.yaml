@@ -3,12 +3,12 @@
 # 아래 ID·경로는 자리표시 값이다. 경로는 절대 경로이거나 ~로 시작해야 한다
 
 projects:
-  gagessi:                                   # 프로젝트 키: 영문 소문자·숫자·-, 40자 이내
+  gagaessi:                                  # 프로젝트 키: 영문 소문자·숫자·-, 40자 이내
     forum_channel_id: "000000000000000000"   # 포럼 채널 ID (따옴표로 감싼 숫자)
-    repo: ~/Dev/Gagessi                      # 앱 저장소 로컬 경로
-    github: owner/Gagessi                    # GitHub 저장소 (owner/name)
+    repo: ~/Developer/GagaeSsi               # 앱 저장소 로컬 경로
+    github: owner/GagaeSsi                   # GitHub 저장소 (owner/name)
     base_branch: develop                     # main은 쓸 수 없다 (SPEC 9.5)
-    test: xcodebuild test -scheme Gagessi -destination 'platform=iOS Simulator,name=iPhone 16'
+    test: xcodebuild test -scheme GagaeSsi -destination 'platform=iOS Simulator,name=iPhone 16'
     vault_dir: 일일 예산 관리 앱
     vault_hub: 가게씨.md
     vault_tag: brain/gagaessi
