@@ -481,8 +481,12 @@ limits:
 ### 9.4 사전 준비 체크리스트
 - Python 3.11+, git, `gh`(인증), Xcode(시뮬레이터 런타임 포함), `claude`·`codex` CLI(구독 로그인)
 - 각 앱 저장소에서 CLI를 한 번 수동 실행해 폴더 신뢰·권한 질문 처리. 2026-10-10 시험 호출에서는 신뢰 처리하지 않은 임시 폴더에서도 `claude -p`, `codex exec`가 질문 없이 실행됐다. 실제 저장소에서 다시 확인한다
-- Discord: 비공개 서버, 포럼 채널, 봇 초대(Send Messages, Send Messages in Threads, Create Public Threads, Read Message History, Manage Webhooks, Manage Threads), Message Content Intent
+- Discord: 비공개 서버, 포럼 채널, 봇 초대(View Channels, Send Messages, Send Messages in Threads, Create Public Threads, Read Message History, Manage Webhooks, Manage Threads, Attach Files), Message Content Intent
   - 초대 URL의 scope는 `bot`과 `applications.commands` 둘 다 (슬래시 명령 등록)
+  - 포럼 채널은 커뮤니티 서버에서만 만들 수 있다. 서버 설정에서 커뮤니티를 켠다
+  - Public Bot을 끄려면 먼저 Installation 탭의 Install Link를 None으로 바꾼다 (Discord Provided Link와 함께 둘 수 없다). Installation Contexts는 Guild Install만
+  - ID는 Discord 앱의 사용자 설정 > 고급 > 개발자 모드를 켠 뒤 오른쪽 클릭 > ID 복사로 얻는다
+  - Attach Files는 긴 의견의 첨부에 필요해 2026-10-11 추가
 - GitHub: 앱 저장소 Merge commit만 허용, head 브랜치 자동 삭제 켬 (트러블슈팅 2026-10-05 참고)
 
 ### 9.5 보안 [확정]
@@ -502,7 +506,7 @@ limits:
 | V2 | `codex exec`의 출력 스키마 지정·마지막 메시지 파일 출력 옵션 | `codex exec --help` | 5.2 | 확인 (2026-10-10, v0.161.0): `--output-schema`, `-o`, read-only 샌드박스 쓰기 차단 |
 | V3 | Claude 쓰기 단계의 허용·금지 도구 지정 방식 | 공식 문서, 시험 호출 | 5.2 권한 | 확인 (2026-10-10): `--allowedTools`·`--disallowedTools`·`--permission-mode`·`--permission-prompts none` |
 | V4 | Codex read-only 샌드박스에서 `xcodebuild` 실패 여부 | 시험 호출 | 1.7 (봇이 테스트 실행하는 근거) |  |
-| V5 | 웹훅 메시지의 silent(알림 억제) 지원 | 시험 게시 | 2.5 멘션 규칙 | API는 지원 (discord.py 2.7.1 `Webhook.send(silent=...)`). 실제 알림 억제는 첫 실행 때 확인 |
+| V5 | 웹훅 메시지의 silent(알림 억제) 지원 | 시험 게시 | 2.5 멘션 규칙 | 확인 (2026-10-11): 멘션 없는 웹훅·운영 채널 메시지는 알림 없이, 멘션 붙은 마지막 의견만 알림 |
 | V6 | 개인 private 저장소에서 브랜치 보호(rulesets) 사용 가능 여부 | GitHub 설정 | 4.7 |  |
 | V7 | `gh` 인증 계정의 Issue·PR 쓰기 권한 | `gh auth status`, 시험 Issue | 1.8, 1.9 |  |
 | V8 | 볼트 루트가 git 저장소인지, iCloud 동기화 중 쓰기 안정성 | `git -C <볼트> status` | 3.10 |  |
@@ -537,8 +541,8 @@ limits:
 
 | Phase | 내용 | 상태 |
 |---|---|---|
-| 0 | 문서 정비: 운영 규약, ADR-005, AGENTS.md, 스키마, SPEC.md | 진행 중 (SPEC.md가 마지막) |
-| 1 | MVP: 포럼 게시글 감지 → Beta·Alpha 의견 병렬 게시 | 미시작 |
+| 0 | 문서 정비: 운영 규약, ADR-005, AGENTS.md, 스키마, SPEC.md | 완료 |
+| 1 | MVP: 포럼 게시글 감지 → Beta·Alpha 의견 병렬 게시 | 완료 (2026-10-11 실제 서버에서 한 사이클 확인) |
 | 2 | 워크플로: 상태 머신 전체, 승인 명령, 리뷰 루프, 테스트 실행, Issue·PR, /stop | 미시작 |
 | 3 | 운영화: 멀티 프로젝트, 빌드 락, launchd, /ping, 재멘션, 볼트·DOC_SYNC | 미시작 |
 | 4 | 파일럿: 가게씨에서 한 사이클 완주 | 미시작 |
@@ -547,6 +551,9 @@ limits:
 
 ### 12.2 Phase 1 스레드 분할 [제안]
 각 스레드는 develop에서 브랜치를 만들고 draft PR 하나로 끝낸다. 시작 전 범위를 제안하고 Zero의 승인을 받는다.
+(2026-10-11부터 PR 단위를 바꿨다. 목표 하나가 최종 완료될 때까지 한 브랜치에 모아 PR을 한 번만 연다. 아래 분할은 작업 순서로만 남긴다. AGENTS.md 참고)
+
+6. `feat/0-phase1-run` — 실제 서버 첫 실행과 시험 사이클, 시작 실패 처리, 이름 통일, 로컬 대시보드 (2026-10-11)
 
 1. `feat/0-agent-runner` — `AgentRunner` 인터페이스, `FakeAgentRunner`, 자식 프로세스 실행(타임아웃·취소, 실행 로그 저장)
    - CLI 러너는 CLI 설치 후 별도 스레드로 분리했다 (2026-10-07 Zero 승인): 이 맥에 `claude`·`codex`가 없어 V1~V3을 확인할 수 없었다

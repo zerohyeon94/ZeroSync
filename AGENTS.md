@@ -65,7 +65,7 @@ v1 메뉴바 앱을 수정할 때만 Xcode 명령을 쓴다. 저장소 루트에
 - 브랜치 이름: `<type>/<Issue번호>-<slug>` (예: `feat/12-vote-schema`). Issue가 없으면 번호 자리에 `0`을 쓴다. `claude/` 접두어는 쓰지 않는다
   - type: `feat`, `fix`, `refactor`, `docs`, `chore`
   - slug: 영문 소문자·숫자와 `-`, 40자 이내
-- 스레드(작업 단위)마다 draft PR 하나를 연다. merge는 Zero가 GitHub에서 Merge commit 방식으로 한다
+- 목표 하나가 최종 완료될 때까지 한 작업 브랜치에 커밋을 모으고, 완료되면 draft PR을 한 번만 연다. 중간 단계마다 PR을 나누지 않는다 (2026-10-11 Zero 결정). merge는 Zero가 GitHub에서 Merge commit 방식으로 한다
 - develop·main에 직접 push하거나 merge하지 않는다. 작업 브랜치에서 push한 뒤에는 force push하지 않는다
 
 ## 커밋 메시지
