@@ -33,6 +33,7 @@ _FAILING_BLOCK = re.compile(r"^Failing tests:\n(?P<body>(?:[ \t]+\S.*\n?)+)", re
 # 컴파일 오류·테스트 단언 실패("/x.swift:42:13: error: ...")와 xcodebuild 자체 오류만 모은다.
 # 앱이 실행 중 남기는 로그("CoreData: error: ...")는 빼야 한다 (2026-10-11 GagaeSsi 출력으로 확인)
 _ERROR_LINE = re.compile(r"^(?:/\S+\.\w+:\d+(?::\d+)?: error: |xcodebuild: error: )")
+_SOURCE_ERROR = re.compile(r"^/\S+\.\w+:\d+")  # 코드 위치가 붙은 빌드 오류
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,16 @@ class TestReport:
     def passed(self) -> bool:
         return self.status is RunStatus.OK and not self.failures
 
+    @property
+    def environment_error(self) -> bool:
+        """테스트를 하나도 실행하지 못했고 코드 위치가 붙은 빌드 오류도 없다.
+
+        시뮬레이터·destination 같은 실행 환경 문제라 에이전트가 코드로 고칠 수 없다.
+        """
+        if self.passed or self.total is not None or self.failed_tests:
+            return False
+        return not any(_SOURCE_ERROR.match(error) for error in self.errors)
+
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "TestReport":
         names = {name for name in cls.__dataclass_fields__}
@@ -62,6 +73,7 @@ class TestReport:
         data = asdict(self)
         data["status"] = self.status.value
         data["passed"] = self.passed
+        data["environment_error"] = self.environment_error
         return data
 
 

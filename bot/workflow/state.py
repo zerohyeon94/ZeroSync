@@ -133,6 +133,8 @@ class TestsFinished:
     __test__ = False  # pytest가 테스트 클래스로 모으지 않게
 
     passed: bool
+    environment_error: bool = False  # 테스트를 실행하지 못한 환경 문제 (시뮬레이터 등)
+    detail: str = ""
 
 
 @dataclass(frozen=True)
@@ -424,6 +426,10 @@ def _testing(task: TaskView, event: Event, limits: Limits) -> Transition | None:
     if isinstance(event, TestsFinished):
         if event.passed:
             return Transition(TaskState.REVIEWING, (PublishPr(), StartReview()))
+        if event.environment_error:
+            # 코드로 고칠 수 없으므로 수정을 부르지 않고 재시도 횟수도 세지 않는다.
+            # 환경을 고친 뒤 /resume하면 테스트만 다시 돈다
+            return _needs_human(TaskState.TESTING, f"테스트 환경 오류: {event.detail}".strip())
         retry = task.test_retry + 1
         if retry > limits.max_test_retries + task.test_limit_bonus:
             return _needs_human(TaskState.TESTING, f"테스트 실패가 {retry}회째다", test_retry=retry)

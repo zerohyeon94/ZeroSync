@@ -419,7 +419,8 @@ class WorkStages:
             return None  # /stop
         message_id = await self._say(task, render_test_report(report), Moment.TEST_RESULT)
         record = NewEvent(Actor.BOT, EventKind.TEST, report.to_payload(), message_id)
-        return TestsFinished(report.passed), record
+        detail = report.errors[0] if report.errors else ""
+        return TestsFinished(report.passed, report.environment_error, detail), record
 
     # PR (운영 규약 1.9, 4.5)
 

@@ -270,6 +270,26 @@ def test_test_failures_fix_until_limit():
     assert over.updates == {"prev_state": TaskState.TESTING, "test_retry": 3}
 
 
+def test_environment_error_goes_to_needs_human_without_fix():
+    result = step(
+        TaskState.TESTING,
+        TestsFinished(False, environment_error=True, detail="xcodebuild: error: no device"),
+        test_retry=1,
+    )
+    assert result.state is TaskState.NEEDS_HUMAN
+    assert result.effects == (MarkNeedsHuman("테스트 환경 오류: xcodebuild: error: no device"),)
+    # 재시도 횟수는 그대로라 /resume하면 테스트만 다시 돈다
+    assert result.updates == {"prev_state": TaskState.TESTING}
+    resumed = step(
+        TaskState.NEEDS_HUMAN,
+        Command(CommandName.RESUME),
+        prev_state=TaskState.TESTING,
+        test_retry=1,
+    )
+    assert resumed.state is TaskState.TESTING
+    assert resumed.effects[-1] == RunTests()
+
+
 def test_review_rounds_until_limit():
     approved = step(TaskState.REVIEWING, ReviewFinished(approved=True))
     assert approved.state is TaskState.AWAIT_MERGE

@@ -109,6 +109,28 @@ def test_runner_reports_pass_and_fail(tmp_path):
     assert "종료 코드 70" in report.errors[0]
 
 
+DESTINATION_FAIL = """\
+xcodebuild: error: Unable to find a device matching the provided destination specifier:
+		{ platform:iOS Simulator, OS:27.0, name:iPhone 17 }
+"""
+
+
+def test_environment_error_only_when_nothing_ran(tmp_path):
+    runner, cmd = run_tests(tmp_path, f"print({DESTINATION_FAIL!r}); raise SystemExit(70)")
+    report = asyncio.run(runner.run("e1", cmd, cwd=tmp_path))
+    assert report.environment_error
+    assert report.errors[0].startswith("xcodebuild: error: Unable to find a device")
+    assert report.to_payload()["environment_error"] is True
+
+    # 코드 위치가 붙은 빌드 오류와 실패한 테스트는 에이전트가 고칠 문제다
+    _, build = run_tests(tmp_path, f"print({BUILD_FAIL!r}); raise SystemExit(65)")
+    assert not asyncio.run(runner.run("e2", build, cwd=tmp_path)).environment_error
+    _, failing = run_tests(tmp_path, f"print({XCTEST_FAIL!r}); raise SystemExit(65)")
+    assert not asyncio.run(runner.run("e3", failing, cwd=tmp_path)).environment_error
+    _, ok = run_tests(tmp_path, f"print({XCTEST_PASS!r})")
+    assert not asyncio.run(runner.run("e4", ok, cwd=tmp_path)).environment_error
+
+
 def test_runner_holds_global_lock(tmp_path):
     """동시 실행 수 1이면 두 테스트가 겹치지 않는다."""
     marker = tmp_path / "running"
