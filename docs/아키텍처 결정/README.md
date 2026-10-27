@@ -29,3 +29,5 @@ Architecture Decision Records — 중요한 기술 선택의 근거를 남긴다
 - [ADR-004](ADR-004-Swift-SwiftUI-전환.md) — Electron에서 Swift + SwiftUI로 전환
 - [샌드박스 해제](2026-07-12-샌드박스-해제.md) — Accessibility 창 제목 감지를 위해 App Sandbox 해제 *(v1 앱 한정, 번호 없음)*
 - [ADR-005](ADR-005-Discord-오케스트레이터-전환.md) — ZeroSync를 Discord 멀티 에이전트 오케스트레이터(v2)로 전환
+- [ADR-006](ADR-006-회사형-구조.md) — ZeroSync를 팀 단위 회사 구조로 재설계 *(일부 ADR-007로 대체)*
+- [ADR-007](ADR-007-회사-재정의.md) — 회사 재정의: 부서 구조와 제품 부서 운영
