@@ -1,6 +1,6 @@
 """설계 요약 스키마 (운영 규약 3.3, 3.8, 4.2, SPEC 5.4).
 
-DESIGN 단계에서 Beta(Claude)가 출력하는 설계 요약 JSON이다.
+DESIGN 단계에서 설계 담당이 출력하는 설계 요약 JSON이다.
 target_feature가 실제 `기능/` 폴더의 파일인지, design_doc이 Issue 번호와 slug에 맞는지는
 검증 컨텍스트로 확인한다.
 
@@ -27,6 +27,7 @@ from pydantic import (
 )
 
 from bot.schemas._types import Item
+from bot.schemas.hiring import HiringProposal
 
 # 검증 컨텍스트 키: 대상 프로젝트 `기능/` 폴더의 파일 이름 집합 (확장자 .md 제외)
 FEATURE_NAMES = "feature_names"
@@ -98,6 +99,8 @@ class DesignSummary(BaseModel):
     test_plan: list[Item] = Field(min_length=1, max_length=6)
     risks: list[Item] = Field(default_factory=list, max_length=3)
     design_doc: DesignDoc
+    # 채용 제안 (운영 규약 1.12). 근거가 있을 때만 붙인다
+    hiring_proposal: HiringProposal | None = None
 
     @field_validator("target_feature")
     @classmethod

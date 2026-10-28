@@ -26,14 +26,25 @@ from bot.agents.base import AgentName, AgentRequest, AgentRunner, EngineName, Mo
 from bot.org import DEFAULT_ORG, Org
 from bot.prompts import (
     HistoryEntry,
+    Persona,
     debate_prompt,
     opinion_prompt,
     persona_for,
     with_format_error,
 )
 from bot.render import render_format_error, render_notice, render_opinion, render_opinion_post
+from bot.render.hiring import rejected_line, render_hiring_proposal
 from bot.schemas import AgentOutputError, Opinion, parse_agent_output
-from bot.store import INVALID_OUTPUT, Actor, EventKind, EventRecord, NewEvent, Repository
+from bot.store import (
+    INVALID_OUTPUT,
+    Actor,
+    EventKind,
+    EventRecord,
+    HiringStatus,
+    NewEvent,
+    NotFoundError,
+    Repository,
+)
 from bot.store.repo import StaleStateError, TaskRecord
 from bot.workflow.chat import Attachment, Author, ChatIO
 from bot.workflow.mentions import Moment, should_mention
@@ -414,6 +425,14 @@ class Engine(WorkStages):
     def _name(self, agent: str) -> str:
         return self._org.display(agent)
 
+    async def _persona(self, agent: AgentName) -> Persona:
+        """인격과 이 팀장이 거절당한 채용 제안 (같은 제안 반복 방지, 운영 규약 1.12)."""
+        rejected = await self._repo.list_hiring_proposals(
+            proposed_by=agent, status=HiringStatus.REJECTED
+        )
+        lines = [rejected_line(r.payload, r.decided_note) for r in rejected]
+        return persona_for(self._org, agent, lines)
+
     async def _ask(
         self,
         task: TaskRecord,
@@ -434,11 +453,57 @@ class Engine(WorkStages):
         """
         call = dict(model=model, mode=mode, cwd=cwd, context=context, verify=verify)
         answer = await self._attempt(task, agent, stage, prompt, resume=resume, **call)
-        if answer.result is not None or answer.failed_to_run:
-            return answer
-        retry = with_format_error(prompt, answer.error)
-        return await self._attempt(
-            task, agent, stage, retry, resume=answer.session_id or resume, **call
+        if answer.result is None and not answer.failed_to_run:
+            retry = with_format_error(prompt, answer.error)
+            answer = await self._attempt(
+                task, agent, stage, retry, resume=answer.session_id or resume, **call
+            )
+        proposal = getattr(answer.result, "hiring_proposal", None)
+        if proposal is not None:
+            await self._record_hiring(task, agent, proposal)
+        return answer
+
+    # 채용 제안 (운영 규약 1.12, SPEC Q19)
+
+    async def _record_hiring(self, task: TaskRecord, agent: AgentName, proposal: Any) -> None:
+        """제안을 저장하고 숫자 근거를 붙여 Zero에게 올린다. 실패해도 단계는 계속한다."""
+        try:
+            evidence = {
+                "runs": await self._repo.count_agent_runs(agent),
+                "errors": await self._repo.count_errors(),
+            }
+            record = await self._repo.add_hiring_proposal(
+                task_id=task.id,
+                proposed_by=agent,
+                payload=proposal.model_dump(mode="json"),
+                evidence=evidence,
+            )
+            await self._chat.notify_ops(
+                render_hiring_proposal(record.id, self._name(agent), proposal, evidence),
+                mention=should_mention(Moment.HIRING_PROPOSAL),
+            )
+        except Exception:
+            log.exception("채용 제안 기록 실패 (작업 %s, %s)", task.id, agent)
+
+    async def decide_hiring(self, proposal_id: int, *, accept: bool, note: str = "") -> str:
+        """Zero의 /hire 답. 수락은 기록만 하고 org.yaml 변경은 Zero가 한다."""
+        try:
+            record = await self._repo.decide_hiring_proposal(
+                proposal_id, accept=accept, note=note.strip()
+            )
+        except NotFoundError:
+            return f"채용 제안 #{proposal_id}이 없다."
+        except StaleStateError as error:
+            return str(error)
+        name = self._name(record.proposed_by)
+        if accept:
+            return (
+                f"채용 제안 #{proposal_id}({name})을 수락으로 기록했다. "
+                "org.yaml과 인격 파일을 추가하고 봇을 다시 시작하면 반영된다."
+            )
+        return (
+            f"채용 제안 #{proposal_id}({name})을 거절로 기록했다. "
+            "다음부터 이 팀장의 프롬프트에 거절 이유가 들어간다."
         )
 
     async def _attempt(
@@ -508,7 +573,7 @@ class Engine(WorkStages):
         history = await self._history(task) if effect.with_history else []
         prompts = {
             agent: opinion_prompt(
-                persona_for(self._org, agent),
+                await self._persona(agent),
                 title=task.title,
                 post=post,
                 question=effect.question,
@@ -536,7 +601,7 @@ class Engine(WorkStages):
         first, second = pair
         prompts = {
             agent: debate_prompt(
-                persona_for(self._org, agent),
+                await self._persona(agent),
                 title=task.title,
                 post=post,
                 own=render_opinion(latest[agent]),

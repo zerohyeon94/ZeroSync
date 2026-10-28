@@ -176,6 +176,7 @@ def test_every_notice_code_has_text():
         (Moment.DOC_SYNC_READY, True),
         (Moment.NEEDS_HUMAN, True),
         (Moment.BOT_ERROR, True),
+        (Moment.HIRING_PROPOSAL, True),
         (Moment.IMPLEMENT_STARTED, False),
         (Moment.TEST_RUNNING, False),
         (Moment.REVIEW_RUNNING, False),
@@ -189,7 +190,7 @@ def test_mention_rules(moment, expected):
 
 
 def test_action_required_covers_only_listed_moments():
-    assert len(ACTION_REQUIRED) == 6
+    assert len(ACTION_REQUIRED) == 7
     assert set(Moment) - ACTION_REQUIRED == {
         Moment.IMPLEMENT_STARTED,
         Moment.TEST_RUNNING,

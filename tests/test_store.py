@@ -81,7 +81,7 @@ def test_connect_creates_schema_and_file(tmp_path):
 
     version, tables, fk = run(scenario())
     assert path.exists()
-    assert version == SCHEMA_VERSION == 3
+    assert version == SCHEMA_VERSION == 4
     assert {"tasks", "events", "agent_runs"} <= tables
     assert fk == 1
 
@@ -336,7 +336,7 @@ def test_v1_database_is_upgraded_with_defaults(tmp_path):
             await conn.close()
 
     version, task = run(scenario())
-    assert version == 3
+    assert version == 4
     assert (task.review_limit_bonus, task.test_limit_bonus, task.recommended_fixed) == (0, 0, 0)
 
 

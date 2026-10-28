@@ -245,6 +245,10 @@ def bot(tmp_path):
         async def on_command(self, thread, name, arg=""):
             calls.append(("command", thread, name, arg))
 
+        async def decide_hiring(self, number, *, accept, note=""):
+            calls.append(("hire", number, accept, note))
+            return f"채용 제안 #{number} 기록"
+
     instance.engine = Engine()
     instance.calls = calls
     return instance
@@ -361,7 +365,8 @@ def test_intents_include_message_content(bot):
     assert isinstance(bot.guild_ref, discord.Object) and bot.guild_ref.id == 1
     names = {command.name for command in bot.tree.get_commands(guild=bot.guild_ref)}
     assert names == {
-        "debate", "decide", "approve", "revise", "fix", "resume", "stop", "status", "ping"
+        "debate", "decide", "approve", "revise", "fix", "resume", "stop", "status", "ping",
+        "hire",
     }  # fmt: skip
     project = project_contexts(bot.config)["gagaessi"]
     assert project.github.repo == "owner/GagaeSsi"
@@ -391,3 +396,16 @@ def test_startup_failure_alerts_ops_and_closes(bot):
     ((text, mention),) = alerts
     assert "시작 실패" in text and "#일반" in text
     assert mention is True
+
+
+def test_hire_is_zero_only_and_reaches_engine(bot):
+    # 채용 제안 답은 작업 게시글이 아니라 운영 채널 등 어디서든 쓴다 (운영 규약 1.12)
+    it = interaction(parent_id=None, channel_id=OPS)
+    run(bot.run_hire(it, accept=False, number=3, note="아직 이르다"))
+    assert bot.calls == [("hire", 3, False, "아직 이르다")]
+    assert it.response.sent == [("채용 제안 #3 기록", {"silent": True})]
+
+    other = interaction(user_id=7)
+    run(bot.run_hire(other, accept=True, number=3, note=""))
+    assert "Zero만" in other.response.sent[0][0]
+    assert len(bot.calls) == 1

@@ -68,7 +68,22 @@ ALTER TABLE agent_runs ADD COLUMN engine TEXT;
 UPDATE agent_runs SET engine = agent WHERE agent IN ('claude', 'codex');
 """
 
-MIGRATIONS: tuple[str, ...] = (_V1, _V2, _V3)
+# v4: 팀장의 채용 제안과 Zero의 답 (운영 규약 1.12, SPEC Q19)
+_V4 = """
+CREATE TABLE hiring_proposals (
+  id               INTEGER PRIMARY KEY,
+  task_id          INTEGER REFERENCES tasks(id),
+  proposed_by      TEXT NOT NULL,
+  payload          TEXT NOT NULL,
+  evidence         TEXT NOT NULL,
+  status           TEXT NOT NULL,
+  decided_note     TEXT,
+  created_at       TEXT NOT NULL,
+  decided_at       TEXT
+);
+"""
+
+MIGRATIONS: tuple[str, ...] = (_V1, _V2, _V3, _V4)
 SCHEMA_VERSION = len(MIGRATIONS)
 
 

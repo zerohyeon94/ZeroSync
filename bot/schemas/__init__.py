@@ -5,6 +5,7 @@
 
 from bot.schemas.design import FEATURE_NAMES, ISSUE_NUMBER, ChangeType, DesignSummary
 from bot.schemas.extract import AgentOutputError, extract_json, parse_agent_output
+from bot.schemas.hiring import HiringKind, HiringProposal
 from bot.schemas.implementation import FindingResponse, ImplementationReport, ResponseAction
 from bot.schemas.opinion import Opinion, Stance
 from bot.schemas.review import Finding, Review, Severity, Verdict
@@ -16,6 +17,8 @@ __all__ = [
     "ChangeType",
     "DesignSummary",
     "Finding",
+    "HiringKind",
+    "HiringProposal",
     "FindingResponse",
     "ImplementationReport",
     "Opinion",

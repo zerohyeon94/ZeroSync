@@ -17,6 +17,7 @@ class Moment(StrEnum):
     DOC_SYNC_READY = "doc_sync_ready"  # 문서 반영안 도착: /approve, /revise, /skip
     NEEDS_HUMAN = "needs_human"  # 한도 초과, 형식 오류 반복: 판단 또는 /stop
     BOT_ERROR = "bot_error"  # 봇·CLI 오류, 타임아웃, 볼트 쓰기 실패 (#zerosync-ops)
+    HIRING_PROPOSAL = "hiring_proposal"  # 팀장의 채용 제안: /hire 수락 또는 거절 (운영 규약 1.12)
 
     # 진행 알림
     IMPLEMENT_STARTED = "implement_started"
@@ -35,6 +36,7 @@ ACTION_REQUIRED = frozenset(
         Moment.DOC_SYNC_READY,
         Moment.NEEDS_HUMAN,
         Moment.BOT_ERROR,
+        Moment.HIRING_PROPOSAL,
     }
 )
 

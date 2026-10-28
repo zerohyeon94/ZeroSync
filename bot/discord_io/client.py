@@ -272,6 +272,18 @@ class ZeroSyncBot(discord.Client):
         text = render_ping(running_cli=len(running), active_tasks=len(active))
         await interaction.response.send_message(text, ephemeral=True)
 
+    async def run_hire(
+        self, interaction: discord.Interaction, *, accept: bool, number: int, note: str
+    ) -> None:
+        """팀장의 채용 제안에 답한다 (운영 규약 1.12). 어느 채널에서든 Zero만 쓸 수 있다."""
+        if interaction.user.id != self.zero_user_id:
+            await interaction.response.send_message(
+                "이 봇의 명령은 Zero만 쓸 수 있다.", ephemeral=True
+            )
+            return
+        text = await self.engine.decide_hiring(number, accept=accept, note=note)
+        await interaction.response.send_message(text, silent=True)
+
     # 백그라운드 실행
 
     def spawn(self, work: Coroutine[Any, Any, Any], label: str) -> None:
@@ -329,6 +341,25 @@ def _register_commands(bot: ZeroSyncBot) -> None:
     @tree.command(name="resume", description="확인 필요 상태에서 직전 단계로 재개한다", guild=guild)
     async def resume(interaction: discord.Interaction) -> None:
         await bot.run_command(interaction, CommandName.RESUME)
+
+    @tree.command(name="hire", description="팀장의 채용 제안에 답한다", guild=guild)
+    @app_commands.rename(decision="결정", number="번호", note="메모")
+    @app_commands.describe(
+        decision="수락 또는 거절", number="채용 제안 번호", note="거절 이유 (다음 제안에 반영)"
+    )
+    @app_commands.choices(
+        decision=[
+            app_commands.Choice(name="수락", value="accept"),
+            app_commands.Choice(name="거절", value="reject"),
+        ]
+    )
+    async def hire(
+        interaction: discord.Interaction,
+        decision: app_commands.Choice[str],
+        number: int,
+        note: str = "",
+    ) -> None:
+        await bot.run_hire(interaction, accept=decision.value == "accept", number=number, note=note)
 
     @tree.command(name="status", description="이 작업의 상태와 진행 횟수", guild=guild)
     async def status(interaction: discord.Interaction) -> None:

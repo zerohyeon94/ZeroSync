@@ -792,3 +792,56 @@ def test_feature_names_are_normalized_to_nfc(tmp_path):
     assert names == {"가게씨 - 여행 지출과 정산"}
     assert all(unicodedata.is_normalized("NFC", n) for n in names)
     assert ProjectContext(repo=tmp_path, feature_dir=tmp_path / "없음").feature_names() is None
+
+
+# 채용 제안 (운영 규약 1.12)
+
+HIRING = {
+    "kind": "team",
+    "team": "디자인팀",
+    "role": "디자인팀장",
+    "reason": "화면 설계가 계속 필요한데 기획팀이 맡고 있다",
+    "cases": ["예산 배너 화면"],
+    "duties": "화면 디자인 명세",
+    "mbti": "ISFP",
+    "competencies": ["디자인 시스템 유지"],
+    "if_not_hired": "화면 품질이 들쭉날쭉하다",
+}
+
+
+def opinion_with_hiring(conclusion):
+    data = json.loads(opinion(conclusion))
+    return json.dumps({**data, "hiring_proposal": HIRING}, ensure_ascii=False)
+
+
+def test_hiring_proposal_is_recorded_and_raised_to_zero():
+    @scenario(claude=[opinion_with_hiring("Beta 의견")], codex=[opinion("Alpha 의견")])
+    async def result(h):
+        await h.post()
+        (proposal,) = await h.repo.list_hiring_proposals()
+        assert proposal.proposed_by == "beta" and proposal.payload["team"] == "디자인팀"
+        assert "runs" in proposal.evidence and "errors" in proposal.evidence
+        text, mention = h.chat.ops[-1]
+        assert mention is True
+        assert "채용 제안 #1" in text and "Beta · 기획팀장" in text and "/hire" in text
+        # 제안이 있어도 의견은 그대로 게시된다
+        assert [p.author for p in h.chat.posts] == ["beta", "alpha"]
+
+
+def test_rejected_proposal_goes_into_later_prompts_and_cannot_be_decided_twice():
+    @scenario(
+        claude=[opinion_with_hiring("Beta 의견"), opinion("다시")],
+        codex=[opinion("Alpha 의견"), opinion("다시")],
+    )
+    async def result(h):
+        await h.post()
+        reply = await h.engine.decide_hiring(1, accept=False, note="아직 화면 작업이 적다")
+        assert "거절로 기록" in reply
+        assert "이미 rejected" in await h.engine.decide_hiring(1, accept=True)
+        assert "없다" in await h.engine.decide_hiring(99, accept=True)
+
+        await h.engine.on_message(THREAD, "다른 의견은?")
+        beta_prompt = h.claude.requests[-1].prompt
+        assert "Zero가 거절한 제안" in beta_prompt and "아직 화면 작업이 적다" in beta_prompt
+        # 거절 이력은 제안한 팀장에게만 들어간다
+        assert "Zero가 거절한 제안" not in h.codex.requests[-1].prompt

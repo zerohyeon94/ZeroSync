@@ -28,12 +28,20 @@ class Persona:
     perspective: str
     basic_question: str
     profile: str = ""  # 인격 파일 전문 (역량, 위험과 보완)
+    rejected: tuple[str, ...] = ()  # Zero가 거절한 이 팀장의 채용 제안 (운영 규약 1.12)
 
 
-def persona_for(org: Org, agent: str) -> Persona:
+def persona_for(org: Org, agent: str, rejected: Sequence[str] = ()) -> Persona:
     spec = org.agents[agent]
     name = org.display(agent) + (f" ({spec.mbti})" if spec.mbti else "")
-    return Persona(name, spec.perspective, spec.basic_question, org.profile(agent))
+    return Persona(name, spec.perspective, spec.basic_question, org.profile(agent), tuple(rejected))
+
+
+HIRING_GUIDE = (
+    "자기 팀 역량 밖의 일이 반복되거나, 다른 관점이나 실제로 일을 맡을 담당이 더 필요하면 "
+    "출력의 hiring_proposal에 근거와 함께 새 팀·팀원을 제안한다. 근거가 없으면 null로 둔다. "
+    "팀이나 역할을 직접 만들지 않는다. 채용은 Zero가 정한다."
+)
 
 
 @dataclass(frozen=True)
@@ -65,9 +73,16 @@ def _history(entries: Sequence[HistoryEntry]) -> str:
 
 
 def _profile(persona: Persona) -> str:
-    if not persona.profile.strip():
-        return ""
-    return f"\n## 인격과 역량\n\n{persona.profile.strip()}\n\n"
+    parts = []
+    if persona.profile.strip():
+        parts.append(f"## 인격과 역량\n\n{persona.profile.strip()}")
+    hiring = HIRING_GUIDE
+    if persona.rejected:
+        hiring += "\n\nZero가 거절한 제안 (새 근거 없이 다시 제안하지 않는다):\n" + "\n".join(
+            f"- {line}" for line in persona.rejected
+        )
+    parts.append(f"## 채용 제안\n\n{hiring}")
+    return "\n" + "\n\n".join(parts) + "\n\n"
 
 
 def _common(persona: Persona, title: str, post: str) -> dict[str, str]:

@@ -20,7 +20,6 @@ from bot.prompts import (
     design_prompt,
     fix_prompt,
     implement_prompt,
-    persona_for,
     review_prompt,
 )
 from bot.render import render_format_error, render_notice
@@ -82,6 +81,7 @@ class WorkStages:
     _thread_url: Any
     _org: Any
     _name: Any
+    _persona: Any
 
     # 공통
 
@@ -225,7 +225,7 @@ class WorkStages:
         verb = "설계를 시작한다" if not revision else "설계를 고친다"
         await self._say(task, f"{self._name(agent)}이 {verb}.")
         prompt = design_prompt(
-            persona_for(self._org, agent),
+            await self._persona(agent),
             title=task.title,
             post=await self._post_text(task),
             decision=await self._decision(task_id),
@@ -300,7 +300,7 @@ class WorkStages:
         summary = await self._summary(task_id)
         agent = self._org.roles.implement
         prompt = implement_prompt(
-            persona_for(self._org, agent),
+            await self._persona(agent),
             title=task.title,
             decision=await self._decision(task_id),
             issue=task.issue_number,
@@ -320,7 +320,7 @@ class WorkStages:
                 source = FixSource.TESTS
         problems = await self._fix_problems(task_id, source)
         prompt = fix_prompt(
-            persona_for(self._org, self._org.roles.implement),
+            await self._persona(self._org.roles.implement),
             title=task.title,
             issue=task.issue_number,
             branch=task.branch,
@@ -480,7 +480,7 @@ class WorkStages:
             previous = render_findings(reviews[-1].review.required_findings)
         agent = self._org.roles.review
         prompt = review_prompt(
-            persona_for(self._org, agent),
+            await self._persona(agent),
             author=self._name(self._org.roles.implement),
             title=task.title,
             decision=await self._decision(task_id),

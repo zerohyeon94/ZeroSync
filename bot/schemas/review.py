@@ -1,6 +1,6 @@
 """리뷰 판정 스키마 (운영 규약 2.3).
 
-REVIEW 단계에서 Alpha(Codex)가 출력하는 형식이다.
+REVIEW 단계에서 리뷰 담당(설계·구현 담당과 다른 에이전트)이 출력하는 형식이다.
 판정과 지적 등급이 어긋나면 검증 단계에서 형식 오류로 처리한다.
 """
 
@@ -10,6 +10,7 @@ from typing import Annotated, Self
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from bot.schemas._types import Item
+from bot.schemas.hiring import HiringProposal
 
 Summary = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 
@@ -58,6 +59,8 @@ class Review(BaseModel):
     verdict: Verdict
     summary: Summary
     findings: list[Finding] = Field(default_factory=list, max_length=10)
+    # 채용 제안 (운영 규약 1.12). 근거가 있을 때만 붙인다
+    hiring_proposal: HiringProposal | None = None
 
     @model_validator(mode="after")
     def _verdict_matches_findings(self) -> Self:

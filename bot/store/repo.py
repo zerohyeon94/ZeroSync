@@ -141,6 +141,25 @@ RUNNING = "running"
 INVALID_OUTPUT = "invalid_output"
 
 
+class HiringStatus(StrEnum):
+    OPEN = "open"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+
+
+@dataclass(frozen=True)
+class HiringRecord:
+    id: int
+    task_id: int | None
+    proposed_by: str
+    payload: Any  # HiringProposal JSON
+    evidence: Any  # 봇이 계산한 숫자 근거
+    status: HiringStatus
+    decided_note: str | None
+    created_at: str
+    decided_at: str | None
+
+
 class Repository:
     def __init__(self, conn: aiosqlite.Connection, clock: Clock):
         self._conn = conn
@@ -350,6 +369,81 @@ class Repository:
         rows = await self._fetchall(sql + " ORDER BY started_at", params)
         return [AgentRunRecord(**{key: row[key] for key in row.keys()}) for row in rows]
 
+    # hiring_proposals (운영 규약 1.12)
+
+    async def add_hiring_proposal(
+        self, *, task_id: int | None, proposed_by: str, payload: Any, evidence: Any
+    ) -> HiringRecord:
+        async with self._transaction():
+            cursor = await self._conn.execute(
+                "INSERT INTO hiring_proposals "
+                "(task_id, proposed_by, payload, evidence, status, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    task_id,
+                    proposed_by,
+                    json.dumps(payload, ensure_ascii=False),
+                    json.dumps(evidence, ensure_ascii=False),
+                    HiringStatus.OPEN.value,
+                    self._now(),
+                ),
+            )
+            proposal_id = cursor.lastrowid
+        assert proposal_id is not None
+        return await self.get_hiring_proposal(proposal_id)
+
+    async def get_hiring_proposal(self, proposal_id: int) -> HiringRecord:
+        row = await self._fetchone("SELECT * FROM hiring_proposals WHERE id = ?", (proposal_id,))
+        if row is None:
+            raise NotFoundError(f"채용 제안 {proposal_id}가 없다")
+        return _hiring(row)
+
+    async def list_hiring_proposals(
+        self, *, proposed_by: str | None = None, status: HiringStatus | None = None
+    ) -> list[HiringRecord]:
+        sql, params = "SELECT * FROM hiring_proposals WHERE 1 = 1", []
+        if proposed_by is not None:
+            sql += " AND proposed_by = ?"
+            params.append(proposed_by)
+        if status is not None:
+            sql += " AND status = ?"
+            params.append(status.value)
+        rows = await self._fetchall(sql + " ORDER BY id", params)
+        return [_hiring(row) for row in rows]
+
+    async def decide_hiring_proposal(
+        self, proposal_id: int, *, accept: bool, note: str
+    ) -> HiringRecord:
+        """열려 있는 제안에만 답할 수 있다. 이미 답한 제안이면 StaleStateError."""
+        status = HiringStatus.ACCEPTED if accept else HiringStatus.REJECTED
+        async with self._transaction():
+            cursor = await self._conn.execute(
+                "UPDATE hiring_proposals SET status = ?, decided_note = ?, decided_at = ? "
+                "WHERE id = ? AND status = ?",
+                (status.value, note or None, self._now(), proposal_id, HiringStatus.OPEN.value),
+            )
+            if cursor.rowcount != 1:
+                current = await self._fetchone(
+                    "SELECT status FROM hiring_proposals WHERE id = ?", (proposal_id,)
+                )
+                if current is None:
+                    raise NotFoundError(f"채용 제안 {proposal_id}가 없다")
+                raise StaleStateError(f"채용 제안 {proposal_id}는 이미 {current['status']}이다")
+        return await self.get_hiring_proposal(proposal_id)
+
+    async def count_agent_runs(self, agent: str) -> dict[str, int]:
+        """에이전트의 실행 결과별 횟수. 채용 제안의 숫자 근거로 쓴다."""
+        rows = await self._fetchall(
+            "SELECT status, COUNT(*) AS n FROM agent_runs WHERE agent = ? GROUP BY status",
+            (agent,),
+        )
+        return {row["status"]: row["n"] for row in rows}
+
+    async def count_errors(self) -> int:
+        """기록된 오류 이벤트 수 (단계 실패, 형식 오류, 재시작 중단 등)."""
+        row = await self._fetchone("SELECT COUNT(*) AS n FROM events WHERE kind = 'error'", ())
+        return int(row["n"]) if row is not None else 0
+
     # helpers
 
     async def _fetchone(self, sql: str, params: Any) -> aiosqlite.Row | None:
@@ -383,6 +477,14 @@ def _actor(value: str) -> ActorName:
         return Actor(value)
     except ValueError:
         return value  # 에이전트 이름
+
+
+def _hiring(row: aiosqlite.Row) -> HiringRecord:
+    data = {key: row[key] for key in row.keys()}
+    data["payload"] = json.loads(data["payload"])
+    data["evidence"] = json.loads(data["evidence"])
+    data["status"] = HiringStatus(data["status"])
+    return HiringRecord(**data)
 
 
 def _event(row: aiosqlite.Row) -> EventRecord:
