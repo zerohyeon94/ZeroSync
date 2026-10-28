@@ -20,6 +20,11 @@ def main(argv: list[str] | None = None) -> int:
         db=config.paths.db,
         runs_dir=config.paths.runs,
         guild_id=config.secrets.discord_guild_id,
+        daily_calls={
+            name: spec.daily_calls
+            for name, spec in config.org.agents.items()
+            if spec.daily_calls is not None
+        },
     )
     server = serve(settings, args.port)
     print(f"대시보드: http://{HOST}:{args.port}  (종료: Ctrl-C)", file=sys.stderr)

@@ -9,7 +9,14 @@ from html import escape
 from typing import Any
 from urllib.parse import quote, urlencode
 
-from bot.dashboard.queries import EventRow, ProjectSummary, RunRow, StageStat, TaskRow
+from bot.dashboard.queries import (
+    EventRow,
+    Overview,
+    ProjectSummary,
+    RunRow,
+    StageStat,
+    TaskRow,
+)
 from bot.org import DEFAULT_ORG
 from bot.render import render_opinion
 from bot.schemas import Opinion
@@ -179,7 +186,109 @@ def _task_link(task_id: int, title: str) -> str:
 # 화면
 
 
-def summary_page(summaries: Sequence[ProjectSummary], stats: Sequence[StageStat]) -> str:
+def _age(since: str | None, now: datetime) -> str:
+    if not since:
+        return "-"
+    hours = (now - datetime.fromisoformat(since)).total_seconds() / 3600
+    return f"{hours:.0f}시간" if hours < 48 else f"{hours / 24:.0f}일"
+
+
+def overview_section(
+    data: Overview,
+    *,
+    now: datetime,
+    daily_calls: Mapping[str, int],
+) -> str:
+    """홈 개요: 승인 대기를 맨 위에 둔다 (ADR-007, SPEC 9.3-1)."""
+
+    link = _task_link
+    todo = len(data.waiting) + len(data.hiring)
+    waits = [(now - datetime.fromisoformat(w.waiting_since)).total_seconds() / 3600
+             for w in data.waiting if w.waiting_since]  # fmt: skip
+    avg_wait = f"{sum(waits) / len(waits):.0f}시간" if waits else "-"
+    paused = (
+        f'<div class="card"><div class="muted">사용량 한도 정지</div>'
+        f'<div class="big warn">{_e(local_time(data.paused_until))}까지</div></div>'
+        if data.paused_until
+        else ""
+    )
+    cards = (
+        f'<div class="card"><div class="muted">Zero가 할 일</div>'
+        f'<div class="big {"warn" if todo else ""}">{todo}</div></div>'
+        f'<div class="card"><div class="muted">실행 중</div>'
+        f'<div class="big">{len(data.running)}</div></div>'
+        f'<div class="card"><div class="muted">Zero 승인 평균 대기</div>'
+        f'<div class="big">{avg_wait}</div></div>'
+        f'<div class="card"><div class="muted">7일 시스템 실패</div>'
+        f'<div class="big {"bad" if data.failures else ""}">{data.failures}</div></div>' + paused
+    )
+    waiting = _table(
+        ["작업", "제품", "상태", "대기"],
+        [
+            (link(w.id, w.title), _e(w.project), _e(w.state), _e(_age(w.waiting_since, now)))
+            for w in data.waiting
+        ]
+        + [
+            (f"채용 제안 #{n}", _name(agent), "/hire 대기", _e(f"{team} {role}"))
+            for n, agent, team, role in data.hiring
+        ],
+    )
+    running = _table(
+        ["작업", "에이전트", "단계", "시작"],
+        (
+            (
+                link(r.task_id, r.title),
+                _name(r.agent),
+                _e(STAGE_LABELS.get(r.stage, r.stage)),
+                _e(local_time(r.started_at)),
+            )
+            for r in data.running
+        ),
+    )
+
+    def used(agent: str) -> str:
+        count = data.today.get(agent, 0)
+        over = agent in daily_calls and count >= daily_calls[agent]
+        return f'<span class="{"bad" if over else ""}">{count}</span>'
+
+    agents = sorted(set(daily_calls) | set(data.today))
+    budget = _table(
+        ["에이전트", "오늘 실행", "하루 한도"],
+        ((_name(a), used(a), str(daily_calls.get(a, "-"))) for a in agents),
+        numeric={1, 2},
+    )
+    board = _table(
+        ["제품", "상태별 작업"],
+        (
+            (
+                _e(project),
+                "<br>".join(
+                    f"{_e(state)}: " + ", ".join(link(i, t) for i, t in items)
+                    for state, items in states.items()
+                ),
+            )
+            for project, states in data.board.items()
+        ),
+    )
+    metrics = _table(
+        ["제품", "도달", "채택", "자동 제외", "확인 필요"],
+        (
+            (_e(m.project), str(m.started), str(m.merged), str(m.dropped), str(m.needs_human))
+            for m in data.week
+        ),
+        numeric={1, 2, 3, 4},
+    )
+    return (
+        f'<div class="cards">{cards}</div>'
+        f"<h2>Zero가 할 일</h2>{waiting}<h2>실행 중</h2>{running}"
+        f"<h2>오늘 예산</h2>{budget}<h2>제품별 작업판</h2>{board}"
+        f"<h2>지표 (7일)</h2>{metrics}"
+    )
+
+
+def summary_page(
+    summaries: Sequence[ProjectSummary], stats: Sequence[StageStat], overview: str = ""
+) -> str:
     total_tasks = sum(s.tasks for s in summaries)
     total_runs = sum(s.runs for s in summaries)
     bad_runs = sum(n for s in summaries for k, n in s.by_status.items() if k in _BAD_STATUSES)
@@ -219,8 +328,9 @@ def summary_page(summaries: Sequence[ProjectSummary], stats: Sequence[StageStat]
         numeric={2, 3},
     )
     body = (
-        f'<h1>요약</h1><div class="cards">{cards}</div>'
-        f"<h2>프로젝트별</h2>{projects}<h2>에이전트·단계별</h2>{stages}"
+        f"<h1>요약</h1>{overview}"
+        f'<h2>누적</h2><div class="cards">{cards}</div>'
+        f"<h2>프로젝트별</h2>{projects}<h2>에이전트·단계별 (병목: 평균 소요)</h2>{stages}"
     )
     return page("요약", body, active="summary")
 

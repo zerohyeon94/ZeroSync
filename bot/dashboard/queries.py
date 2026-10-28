@@ -221,3 +221,125 @@ def get_run(conn: sqlite3.Connection, run_id: str) -> RunRow | None:
 
 def projects(conn: sqlite3.Connection) -> list[str]:
     return [row[0] for row in conn.execute("SELECT DISTINCT project FROM tasks ORDER BY 1")]
+
+
+# 홈 개요 (ADR-007: 승인 대기, 실행 중, 예산, 작업판, 지표, 병목)
+
+WAITING_STATES = (
+    "OPINIONS",
+    "AWAIT_DESIGN_APPROVAL",
+    "AWAIT_MERGE",
+    "AWAIT_DOC_APPROVAL",
+    "NEEDS_HUMAN",
+)
+
+
+@dataclass(frozen=True)
+class WaitingRow:
+    id: int
+    project: str
+    title: str
+    state: str
+    waiting_since: str | None
+
+
+@dataclass(frozen=True)
+class RunningRow:
+    task_id: int
+    title: str
+    agent: str
+    stage: str
+    started_at: str
+
+
+@dataclass(frozen=True)
+class ProductMetrics:
+    project: str
+    started: int  # 도달
+    merged: int  # 채택
+    dropped: int  # 자동 제외
+    needs_human: int
+
+
+@dataclass(frozen=True)
+class Overview:
+    waiting: list[WaitingRow]
+    running: list[RunningRow]
+    paused_until: str | None
+    today: dict[str, int]  # 에이전트 → 오늘 실행 수
+    board: dict[str, dict[str, list[tuple[int, str]]]]  # 제품 → 상태 → (번호, 제목)
+    week: list[ProductMetrics]
+    failures: int  # 7일 시스템 실패 (오류 이벤트)
+    hiring: list[tuple[int, str, str, str]]  # 번호, 제안한 팀장, 팀, 역할
+
+
+def _optional(conn: sqlite3.Connection, sql: str, params: tuple[Any, ...] = ()) -> list[Any]:
+    """봇이 아직 새 스키마로 올리지 않은 DB에서도 화면이 뜨게 없는 테이블은 빈 결과로."""
+    try:
+        return list(conn.execute(sql, params))
+    except sqlite3.OperationalError:
+        return []
+
+
+def overview(conn: sqlite3.Connection, *, today_start: str, week_start: str) -> Overview:
+    marks = ", ".join("?" for _ in WAITING_STATES)
+    waiting = [
+        WaitingRow(r["id"], r["project"], r["title"], r["state"], r["waiting_since"])
+        for r in conn.execute(
+            f"SELECT id, project, title, state, waiting_since FROM tasks WHERE state IN ({marks}) "
+            "ORDER BY waiting_since",
+            WAITING_STATES,
+        )
+    ]
+    running = [
+        RunningRow(r["task_id"], r["title"], r["agent"], r["stage"], r["started_at"])
+        for r in conn.execute(
+            "SELECT r.task_id, t.title, r.agent, r.stage, r.started_at FROM agent_runs r "
+            "JOIN tasks t ON t.id = r.task_id WHERE r.status = 'running' ORDER BY r.started_at"
+        )
+    ]
+    paused = _optional(conn, "SELECT value FROM bot_state WHERE key = 'queue_paused_until'")
+    today = {
+        r["agent"]: r["n"]
+        for r in conn.execute(
+            "SELECT agent, COUNT(*) AS n FROM agent_runs WHERE started_at >= ? GROUP BY agent",
+            (today_start,),
+        )
+    }
+    board: dict[str, dict[str, list[tuple[int, str]]]] = {}
+    for r in conn.execute(
+        "SELECT id, project, title, state FROM tasks WHERE state NOT IN ('DONE', 'STOPPED') "
+        "ORDER BY project, id"
+    ):
+        board.setdefault(r["project"], {}).setdefault(r["state"], []).append((r["id"], r["title"]))
+    week = [
+        ProductMetrics(r["project"], r["started"], r["merged"], r["dropped"], r["needs_human"])
+        for r in conn.execute(
+            "SELECT project, "
+            "SUM(created_at >= ?) AS started, "
+            "SUM(state = 'DONE' AND updated_at >= ?) AS merged, "
+            "SUM(state = 'STOPPED' AND updated_at >= ?) AS dropped, "
+            "SUM(state = 'NEEDS_HUMAN') AS needs_human "
+            "FROM tasks GROUP BY project ORDER BY project",
+            (week_start, week_start, week_start),
+        )
+    ]
+    failures = conn.execute(
+        "SELECT COUNT(*) FROM events WHERE kind = 'error' AND created_at >= ?", (week_start,)
+    ).fetchone()[0]
+    hiring = []
+    for r in _optional(
+        conn, "SELECT id, proposed_by, payload FROM hiring_proposals WHERE status = 'open'"
+    ):
+        payload = json.loads(r["payload"])
+        hiring.append((r["id"], r["proposed_by"], payload.get("team", ""), payload.get("role", "")))
+    return Overview(
+        waiting=waiting,
+        running=running,
+        paused_until=paused[0]["value"] if paused else None,
+        today=today,
+        board=board,
+        week=week,
+        failures=failures,
+        hiring=hiring,
+    )

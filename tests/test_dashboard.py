@@ -204,3 +204,32 @@ def test_phase2_events_are_rendered(settings):
     _, body = get(settings, "/tasks/1")
     assert "테스트 통과 — 431개" in body
     assert "PR #43 merge 감지" in body
+
+
+def test_home_overview_puts_zero_todo_first(settings):
+    from dataclasses import replace
+    from datetime import timedelta
+
+    later = replace(
+        settings,
+        daily_calls={"claude": 1, "beta": 30},
+        now=lambda: T0 + timedelta(hours=5),
+    )
+    status, body = get(later, "/")
+    assert status is HTTPStatus.OK
+    # 승인 대기(OPINIONS) 1건이 맨 위 표에, 대기 시간과 함께
+    todo = body.index("<h2>Zero가 할 일</h2>")
+    assert todo < body.index("<h2>누적</h2>")
+    assert "#1 여행 &lt;소비&gt;" in body[todo:] and "5시간" in body
+    # 오늘 예산: 한도에 닿은 에이전트는 표시한다
+    assert '<span class="bad">2</span>' in body
+    assert "<h2>제품별 작업판</h2>" in body and "<h2>지표 (7일)</h2>" in body
+
+
+def test_overview_works_on_old_schema_without_new_tables(settings):
+    # 봇이 새 스키마로 올리기 전의 DB에서도 화면이 뜬다
+    raw = sqlite3.connect(settings.db)
+    raw.executescript("DROP TABLE hiring_proposals; DROP TABLE bot_state;")
+    raw.close()
+    status, body = get(settings, "/")
+    assert status is HTTPStatus.OK and "Zero가 할 일" in body
