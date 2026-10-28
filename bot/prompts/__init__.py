@@ -247,10 +247,20 @@ def _features(features: Sequence[str] | None) -> str:
     return "\n".join(f"- {name}" for name in sorted(features)) or "(아직 없다)"
 
 
+_CHANGE_KEYS = {"change_type", "target_feature", "slug", "title", "scope"}
+
+
 def _change_rule(change: ChangeSummary | None, features: Sequence[str] | None) -> str:
     """변경 유형을 이미 정했으면(기획·진단 승인) 그대로 쓰게 하고, 아니면 목록에서 고르게 한다."""
     if change is not None:
-        return "Zero가 이미 승인한 값이다. 출력에 그대로 쓴다:\n" + change_text(change)
+        # 표시용 제목(feat(영역): 요약)을 title에 옮겨 적지 않게 필드 값을 그대로 준다
+        values = json.dumps(
+            change.model_dump(mode="json", include=_CHANGE_KEYS), ensure_ascii=False
+        )
+        return (
+            "Zero가 이미 승인한 값이다. 출력의 아래 필드에 글자 하나 바꾸지 않고 그대로 쓴다:\n"
+            f"{values}\n\n" + change_text(change)
+        )
     return (
         "기능 정의서(볼트 `기능/` 폴더) 목록이다. target_feature는 이 목록에서 고르고, "
         "change_type이 feature_add일 때만 목록에 없는 새 이름을 쓴다.\n" + _features(features)

@@ -485,7 +485,11 @@ def test_design_must_keep_approved_change_fields():
     async def _(h):
         await h.engine.task_from_chat(P, "/task feature", "예산 배너")
         await h.command(CommandName.APPROVE)
-        assert h.claude.requests[2].stage is Stage.DESIGN  # 다시 요청했다
+        first, again = h.claude.requests[1:3]
+        # 승인된 값은 필드 그대로(JSON) 준다. 표시용 제목을 title에 옮기는 실수를 막는다
+        assert '"title": "월 예산 초과 시 홈 화면 배너 표시"' in first.prompt
+        assert again.stage is Stage.DESIGN  # 다시 요청했다
+        assert "slug는 승인된 값 'budget-banner'을 그대로 쓴다" in again.prompt
         assert (await h.task()).state is TaskState.AWAIT_MERGE
 
 

@@ -372,7 +372,11 @@ class WorkStages:
             approved = change is not None and kind is EventKind.DESIGN
             if approved and summary.change_fields() != change.change_fields():
                 # 기획·진단에서 승인된 변경 필드를 설계가 바꾸지 않는다
-                problems.append("변경 유형·대상 기능·slug·제목·영역은 승인된 값을 그대로 쓴다")
+                expected = change.change_fields()
+                for key, value in summary.change_fields().items():
+                    if value != expected[key]:
+                        want = getattr(expected[key], "value", expected[key])
+                        problems.append(f"{key}는 승인된 값 '{want}'을 그대로 쓴다")
             return problems + await self._commit_problems(task, worktree, before)
 
         agent = stage.agent
