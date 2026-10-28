@@ -9,14 +9,14 @@
 import asyncio
 import logging
 from collections.abc import Coroutine, Mapping
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import discord
 from discord import app_commands
 
 from bot.agents.base import AgentRunner, EngineName
-from bot.clock import Clock, SystemClock
+from bot.clock import Clock, SystemClock, from_iso, to_iso
 from bot.config import Config
 from bot.discord_io.chat import DiscordChat
 from bot.discord_io.rules import (
@@ -28,6 +28,8 @@ from bot.discord_io.rules import (
 )
 from bot.github import GitHubClient
 from bot.render.status import render_ping, render_status
+from bot.reports import Report, morning_report, weekly_report
+from bot.scheduler import BUILTIN_SCHEDULES, MORNING_REPORT, is_due, parse_cron
 from bot.store import Repository
 from bot.workflow.engine import PAUSE_KEY, Engine, ProjectContext
 from bot.workflow.gate import AgentGate
@@ -75,6 +77,8 @@ class ZeroSyncBot(discord.Client):
         self.zero_user_id = int(config.secrets.zero_user_id)
         self.guild_ref = discord.Object(int(config.secrets.discord_guild_id))
         self.ops_channel_id = int(config.secrets.ops_channel_id)
+        report_id = config.secrets.report_channel_id
+        self.report_channel_id = int(report_id) if report_id else None
         self.forums: dict[int, str] = {
             int(project.forum_channel_id): key for key, project in config.projects.items()
         }
@@ -84,6 +88,7 @@ class ZeroSyncBot(discord.Client):
             webhook_for=self._webhook_for,
             ops_channel=self._ops_channel,
             org=config.org,
+            report_channel=self._report_channel if self.report_channel_id else None,
         )
         self.engine = Engine(
             repo,
@@ -140,6 +145,7 @@ class ZeroSyncBot(discord.Client):
         self._loops = [
             asyncio.create_task(self._poll_merges()),
             asyncio.create_task(self._remind_loop()),
+            asyncio.create_task(self._schedule_loop()),
         ]
         await self.chat.notify_ops(
             f"ZeroSync 봇을 시작했다. 프로젝트: {', '.join(self.config.projects)}. "
@@ -168,6 +174,46 @@ class ZeroSyncBot(discord.Client):
             except Exception:
                 log.exception("재멘션 확인 실패")
             await asyncio.sleep(REMIND_CHECK_SEC)
+
+    async def _schedule_loop(self) -> None:
+        """내장 일정(아침·주간 보고)을 1분마다 확인한다. 놓친 실행은 한 번만 (SPEC 6.6)."""
+        while not self.is_closed():
+            try:
+                await self.run_due_schedules()
+            except Exception:
+                log.exception("일정 실행 실패")
+            await asyncio.sleep(60)
+
+    async def run_due_schedules(self) -> list[str]:
+        """지금 실행할 일정을 실행하고 이름을 돌려준다."""
+        now = self.clock.now()
+        local = now.astimezone()
+        last = await self.repo.schedule_runs()
+        ran = []
+        for job, text in BUILTIN_SCHEDULES.items():
+            previous = from_iso(last[job]) if job in last else None
+            if not is_due(parse_cron(text), local, previous):
+                continue
+            # 실행 전에 기록한다. 보고가 실패해도 1분마다 다시 보내지 않게 하기 위해서다
+            await self.repo.record_schedule_run(job, to_iso(now))
+            report = await self._build_report(job, now)
+            await self.chat.report(report.text, mention=report.mention)
+            ran.append(job)
+        return ran
+
+    async def _build_report(self, job: str, now: datetime) -> Report:
+        if job == MORNING_REPORT:
+            paused = await self.repo.get_state(PAUSE_KEY) or ""
+            return await morning_report(
+                self.repo, self.config.org, now, self.thread_url, paused=paused
+            )
+        return await weekly_report(self.repo, self.config.org, now, list(self.config.projects))
+
+    async def _report_channel(self) -> Any:
+        assert self.report_channel_id is not None
+        return self.get_channel(self.report_channel_id) or await self.fetch_channel(
+            self.report_channel_id
+        )
 
     async def close(self) -> None:
         for loop in getattr(self, "_loops", []):

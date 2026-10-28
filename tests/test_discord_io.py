@@ -412,3 +412,33 @@ def test_hire_is_zero_only_and_reaches_engine(bot):
     run(bot.run_hire(other, accept=True, number=3, note=""))
     assert "Zero만" in other.response.sent[0][0]
     assert len(bot.calls) == 1
+
+
+def test_due_reports_run_once_and_go_to_report_channel(bot):
+    from bot.clock import FixedClock
+    from bot.store import Repository, connect
+
+    async def main():
+        conn = await connect(":memory:")
+        try:
+            clock = FixedClock(datetime(2026, 10, 25, 23, 0, tzinfo=UTC))  # 한국 월 08:00
+            bot.clock = clock
+            bot.repo = Repository(conn, clock)
+            sent = []
+
+            async def report(text, *, mention=False):
+                sent.append((text.splitlines()[0], mention))
+
+            bot.chat.report = report
+            first = await bot.run_due_schedules()
+            again = await bot.run_due_schedules()
+            clock.advance(timedelta(days=1))
+            next_day = await bot.run_due_schedules()
+            return first, again, next_day, sent
+        finally:
+            await conn.close()
+
+    first, again, next_day, sent = run(main())
+    assert sorted(first) == ["morning_report", "weekly_report"]
+    assert again == [] and next_day == ["morning_report"]
+    assert sent[0][0].startswith("**아침 보고**") and sent[1][0].startswith("**주간 보고**")

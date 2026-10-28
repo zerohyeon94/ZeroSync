@@ -459,6 +459,25 @@ class Repository:
         )
         return int(row["n"]) if row is not None else 0
 
+    async def agent_run_stats_since(self, since: str) -> dict[str, dict[str, int]]:
+        """since 이후 에이전트별·결과별 실행 수 (보고, 예산 추이)."""
+        rows = await self._fetchall(
+            "SELECT agent, status, COUNT(*) AS n FROM agent_runs WHERE started_at >= ? "
+            "GROUP BY agent, status",
+            (since,),
+        )
+        stats: dict[str, dict[str, int]] = {}
+        for row in rows:
+            stats.setdefault(row["agent"], {})[row["status"]] = row["n"]
+        return stats
+
+    async def count_events_since(self, kind: EventKind, since: str) -> int:
+        row = await self._fetchone(
+            "SELECT COUNT(*) AS n FROM events WHERE kind = ? AND created_at >= ?",
+            (kind.value, since),
+        )
+        return int(row["n"]) if row is not None else 0
+
     # bot_state, schedule_runs
 
     async def get_state(self, key: str) -> str | None:

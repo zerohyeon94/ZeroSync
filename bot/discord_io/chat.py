@@ -32,10 +32,13 @@ class DiscordChat:
         webhook_for: Callable[[int], Awaitable[WebhookLike]],
         ops_channel: Callable[[], Awaitable[ChannelLike]],
         org: Org = DEFAULT_ORG,
+        report_channel: Callable[[], Awaitable[ChannelLike]] | None = None,
     ):
         """webhook_for(thread_id)는 그 게시글이 속한 포럼 채널의 웹훅을 돌려준다."""
         self._zero = zero_user_id
         self._org = org
+        # #대표실이 없으면 운영 채널로 보고한다
+        self._report_channel = report_channel or ops_channel
         self._webhook_for = webhook_for
         self._ops_channel = ops_channel
 
@@ -82,7 +85,12 @@ class DiscordChat:
         return first_id
 
     async def notify_ops(self, text: str, *, mention: bool = False) -> None:
-        channel = await self._ops_channel()
+        await self._send(await self._ops_channel(), text, mention)
+
+    async def report(self, text: str, *, mention: bool = False) -> None:
+        await self._send(await self._report_channel(), text, mention)
+
+    async def _send(self, channel: ChannelLike, text: str, mention: bool) -> None:
         for index, chunk in enumerate(self._content(text, mention)):
             await channel.send(
                 chunk,

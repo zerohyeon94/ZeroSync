@@ -33,6 +33,7 @@ DEFAULT_PROJECTS_PATH = PACKAGE_DIR / "projects.yaml"
 DEFAULT_ENV_PATH = PACKAGE_DIR.parent / ".env"
 
 ENV_KEYS = ("DISCORD_TOKEN", "DISCORD_GUILD_ID", "ZERO_USER_ID", "OPS_CHANNEL_ID")
+OPTIONAL_ENV_KEYS = ("REPORT_CHANNEL_ID",)
 
 _PROJECT_KEY = re.compile(r"^[a-z][a-z0-9-]{0,39}$")
 _GITHUB_REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -184,6 +185,8 @@ class Secrets(_Model):
     discord_guild_id: DiscordId
     zero_user_id: DiscordId
     ops_channel_id: DiscordId
+    # #대표실 (아침·주간 보고). 없으면 운영 채널로 보고한다 (ADR-007)
+    report_channel_id: DiscordId | None = None
 
 
 class Config(_Model):
@@ -254,6 +257,10 @@ def load_config(
     if missing:
         raise ConfigError(f"환경변수가 없다: {', '.join(missing)} (.env.example 참고)")
 
+    for key in OPTIONAL_ENV_KEYS:
+        value = environ.get(key, env_file.get(key))
+        if value:
+            merged[key] = value
     try:
         projects = ProjectsFile.model_validate(raw)
         secrets = Secrets.model_validate({key.lower(): value for key, value in merged.items()})

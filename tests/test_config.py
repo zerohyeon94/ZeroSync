@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from bot.agents import Stage
-from bot.config import PACKAGE_DIR, ConfigError, load_config, parse_env
+from bot.config import OPTIONAL_ENV_KEYS, PACKAGE_DIR, ConfigError, load_config, parse_env
 
 EXAMPLE = PACKAGE_DIR / "projects.example.yaml"
 ENV_EXAMPLE = PACKAGE_DIR.parent / ".env.example"
@@ -115,7 +115,14 @@ def test_example_file_is_valid():
 
 
 def test_env_example_lists_every_key():
-    assert set(parse_env(ENV_EXAMPLE.read_text(encoding="utf-8"))) == set(ENV)
+    keys = set(parse_env(ENV_EXAMPLE.read_text(encoding="utf-8")))
+    assert keys == set(ENV) | set(OPTIONAL_ENV_KEYS)
+
+
+def test_report_channel_is_optional(tmp_path):
+    assert load(tmp_path).secrets.report_channel_id is None
+    config = load(tmp_path, environ={**ENV, "REPORT_CHANNEL_ID": "77"})
+    assert config.secrets.report_channel_id == "77"
 
 
 # 프로젝트 설정 검증

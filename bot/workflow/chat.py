@@ -39,6 +39,10 @@ class ChatIO(Protocol):
         """#zerosync-ops 채널에 알린다."""
         ...
 
+    async def report(self, text: str, *, mention: bool = False) -> None:
+        """#대표실 채널에 보고한다 (아침·주간 보고, ADR-007)."""
+        ...
+
 
 @dataclass(frozen=True)
 class Post:
@@ -55,6 +59,7 @@ class FakeChatIO:
 
     posts: list[Post] = field(default_factory=list)
     ops: list[tuple[str, bool]] = field(default_factory=list)
+    reports: list[tuple[str, bool]] = field(default_factory=list)
 
     async def post(
         self,
@@ -70,3 +75,6 @@ class FakeChatIO:
 
     async def notify_ops(self, text: str, *, mention: bool = False) -> None:
         self.ops.append((text, mention))
+
+    async def report(self, text: str, *, mention: bool = False) -> None:
+        self.reports.append((text, mention))
