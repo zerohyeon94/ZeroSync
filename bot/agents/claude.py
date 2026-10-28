@@ -31,6 +31,14 @@ LOCAL_GIT = (
     "Bash(git rm:*)",
 )
 DESIGN_TOOLS = (*READ_TOOLS, "Edit(docs/설계/**)", "Write(docs/설계/**)", *LOCAL_GIT)
+PLAN_TOOLS = (*READ_TOOLS, "Edit(docs/기획/**)", "Write(docs/기획/**)", *LOCAL_GIT)
+UI_DESIGN_TOOLS = (*READ_TOOLS, "Edit(docs/디자인/**)", "Write(docs/디자인/**)", *LOCAL_GIT)
+# 문서 단계는 자기 폴더만 쓴다 (운영 규약 1.3)
+DOC_STAGE_TOOLS = {
+    Stage.PLAN: PLAN_TOOLS,
+    Stage.UI_DESIGN: UI_DESIGN_TOOLS,
+    Stage.DESIGN: DESIGN_TOOLS,
+}
 IMPLEMENT_TOOLS = (*READ_TOOLS, "Edit", "Write", *LOCAL_GIT)
 DENIED_TOOLS = (
     "Bash(git push:*)",
@@ -93,8 +101,8 @@ class ClaudeCliRunner:
 def _permission_args(request: AgentRequest) -> list[str]:
     if request.mode == "read_only":
         return ["--permission-mode", "plan"]
-    if request.stage is Stage.DESIGN:
-        return ["--permission-mode", "dontAsk", "--allowedTools", *DESIGN_TOOLS]
+    if request.stage in DOC_STAGE_TOOLS:
+        return ["--permission-mode", "dontAsk", "--allowedTools", *DOC_STAGE_TOOLS[request.stage]]
     if request.stage in (Stage.IMPLEMENT, Stage.FIX):
         return ["--permission-mode", "acceptEdits", "--allowedTools", *IMPLEMENT_TOOLS]
     raise ValueError(f"{request.stage} 단계는 쓰기 모드로 실행하지 않는다")

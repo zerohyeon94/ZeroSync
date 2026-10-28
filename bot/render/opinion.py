@@ -54,3 +54,13 @@ def render_format_error(raw: str, error: str) -> RenderedPost:
     if len(body) <= _RAW_INLINE_LENGTH and "```" not in body:
         return RenderedPost(f"{head}\n\n원문:\n```\n{body}\n```")
     return RenderedPost(f"{head}\n\n원문은 첨부 파일로 올린다.", (Attachment("raw.txt", body),))
+
+
+def split_attachment(text: str, filename: str) -> RenderedPost:
+    """1,500자가 넘으면 첫 줄만 게시하고 전문은 첨부한다 (운영 규약 2.6)."""
+    if len(text) <= MAX_POST_LENGTH:
+        return RenderedPost(text)
+    first_line = text.split("\n", 1)[0]
+    return RenderedPost(
+        f"{first_line}\n\n전문이 길어 첨부 파일로 올린다.", (Attachment(filename, text),)
+    )

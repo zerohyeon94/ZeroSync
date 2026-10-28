@@ -63,6 +63,10 @@ class _Model(BaseModel):
 
 class ProjectConfig(_Model):
     forum_channel_id: DiscordId
+    # 제품 채팅 채널: 팀장과 의견을 나누고 /task로 일을 시작한다 (ADR-007)
+    chat_channel_id: DiscordId | None = None
+    # 제품 Claude 디자인 시스템 링크 (ADR-007, 화면 디자인 단계)
+    design_system_url: str | None = None
     repo: ExpandedPath
     github: str = Field(pattern=_GITHUB_REPO.pattern)
     base_branch: str = "develop"
@@ -111,9 +115,9 @@ class PathsConfig(_Model):
 
 ModelName = Annotated[str, Field(min_length=1)]
 
-# 단계별 담당 (SPEC 5.2). Codex는 읽기 전용 단계만 맡는다
-CLAUDE_STAGES = frozenset(Stage) - {Stage.REVIEW}
-CODEX_STAGES = frozenset({Stage.OPINION, Stage.DEBATE, Stage.REVIEW})
+# 단계별 기본 모델을 둘 수 있는 단계 (SPEC 5.2). Codex는 읽기 전용 단계만 맡는다
+CLAUDE_STAGES = frozenset(Stage)
+CODEX_STAGES = frozenset({Stage.OPINION, Stage.DEBATE, Stage.REVIEW, Stage.DIAGNOSE})
 
 
 class CliConfig(_Model):
@@ -175,9 +179,13 @@ class ProjectsFile(_Model):
     def _unique_forums(self) -> "ProjectsFile":
         seen: dict[str, str] = {}
         for key, project in self.projects.items():
-            other = seen.setdefault(project.forum_channel_id, key)
-            if other != key:
-                raise ValueError(f"프로젝트 {other}와 {key}의 forum_channel_id가 같다")
+            channels = [project.forum_channel_id]
+            if project.chat_channel_id is not None:
+                channels.append(project.chat_channel_id)
+            for channel in channels:
+                if channel in seen:
+                    raise ValueError(f"프로젝트 {seen[channel]}와 {key}의 채널 ID가 겹친다")
+                seen[channel] = key
         return self
 
 
@@ -198,6 +206,13 @@ class Config(_Model):
     secrets: Secrets
     org: Org
     pipelines: dict[str, Pipeline]
+
+    def project_for_chat(self, channel_id: str) -> str | None:
+        """제품 채팅 채널 ID로 프로젝트 키를 찾는다."""
+        for key, project in self.projects.items():
+            if project.chat_channel_id == channel_id:
+                return key
+        return None
 
     def project_for_forum(self, channel_id: str) -> str | None:
         """포럼 채널 ID로 프로젝트 키를 찾는다. 등록되지 않은 채널이면 None."""

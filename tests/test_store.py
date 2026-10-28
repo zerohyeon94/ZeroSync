@@ -20,7 +20,7 @@ from bot.store import (
     connect,
     schema_version,
 )
-from bot.workflow.state import PostCreated, TaskState, ZeroMessage, start_task, transition
+from bot.workflow.state import TaskState
 
 T0 = datetime(2026, 10, 7, 9, 0, tzinfo=UTC)
 
@@ -39,14 +39,13 @@ def zero(text, kind=EventKind.MESSAGE):
 
 
 async def new_task(repo, thread="thread-1"):
-    result = start_task(PostCreated("예산 배너", "배너를 띄우자"))
     return await repo.create_task(
         project="gagaessi",
         discord_thread=thread,
         title="예산 배너",
-        state=result.state,
+        state=TaskState.OPINIONS,
         event=zero("배너를 띄우자"),
-        updates=result.updates,
+        updates={"opinion_rounds": 0},
     )
 
 
@@ -81,7 +80,7 @@ def test_connect_creates_schema_and_file(tmp_path):
 
     version, tables, fk = run(scenario())
     assert path.exists()
-    assert version == SCHEMA_VERSION == 5
+    assert version == SCHEMA_VERSION == 6
     assert {"tasks", "events", "agent_runs"} <= tables
     assert fk == 1
 
@@ -160,13 +159,12 @@ def test_apply_transition_saves_state_fields_and_event_together():
         conn, repo = await open_repo(clock=clock)
         task = await new_task(repo)
         clock.advance(timedelta(minutes=5))
-        result = transition(task, ZeroMessage("@codex 반례는?"))
         task = await repo.apply_transition(
             task.id,
             expected_state=task.state,
-            new_state=result.state,
+            new_state=TaskState.OPINIONS,
             event=zero("@codex 반례는?"),
-            updates=result.updates,
+            updates={"opinion_rounds": 1},
         )
         events = await repo.list_events(task.id, {EventKind.MESSAGE})
         await conn.close()

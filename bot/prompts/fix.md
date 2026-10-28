@@ -8,7 +8,7 @@ $profile지금은 수정 단계다. 아래 문제를 고친다.
 제목: $title
 GitHub Issue: #$issue
 작업 브랜치: $branch
-설계 전문: `$design_doc`
+$spec_docs
 
 ## 고칠 것
 

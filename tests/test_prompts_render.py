@@ -183,6 +183,7 @@ def test_every_notice_code_has_text():
         (Moment.REVIEW_RUNNING, False),
         (Moment.TEST_RESULT, False),
         (Moment.REVIEW_ROUND_RESULT, False),
+        (Moment.STAGE_DONE, False),
         (Moment.NOTICE, False),
     ],
 )
@@ -198,5 +199,6 @@ def test_action_required_covers_only_listed_moments():
         Moment.REVIEW_RUNNING,
         Moment.TEST_RESULT,
         Moment.REVIEW_ROUND_RESULT,
+        Moment.STAGE_DONE,
         Moment.NOTICE,
     }

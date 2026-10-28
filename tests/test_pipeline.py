@@ -72,7 +72,7 @@ def test_load_from_company_folder(tmp_path):
         ("{id: plan, kind: plan, agent: beta}", "{id: plan, kind: plan}", "agent가 없다"),
         ("triggers: [discord_task]", "triggers: [schedule]", "schedule"),
         ("triggers: [discord_task]", "triggers: [slack]", "triggers"),
-        ("  - {id: approve, kind: gate}\n", "  - {id: approve, kind: gate}\n  - {id: again, kind: gate}\n", "연달아"),  # noqa: E501
+        ("  - {id: approve, kind: gate}\n", "  - {id: approve, kind: gate}\n  - {id: again, kind: gate}\n", "gate는"),  # noqa: E501
         ("id: review,", "id: test,", "겹친다"),
     ],
 )  # fmt: skip
@@ -90,6 +90,24 @@ def test_codex_agent_cannot_take_writing_stage(tmp_path):
     )
     with pytest.raises(PipelineError, match="Codex"):
         load_pipelines(write(tmp_path), org)
+
+
+def test_same_kind_twice_is_rejected(tmp_path):
+    text = FEATURE.replace(
+        "  - {id: merge, kind: merge_gate}\n",
+        "  - {id: merge, kind: merge_gate}\n  - {id: test2, kind: test}\n",
+    )
+    with pytest.raises(PipelineError, match="같은 종류"):
+        load_pipelines(write(tmp_path, text), DEFAULT_ORG)
+
+
+def test_legacy_pipeline_needs_default_names():
+    from orgs import LEGACY_ORG
+
+    from bot.pipeline import legacy_pipeline
+
+    assert legacy_pipeline(DEFAULT_ORG).first_of(StageKind.REVIEW).agent == "delta"
+    assert legacy_pipeline(LEGACY_ORG) is None
 
 
 def test_bad_schedule_and_duplicate_commands(tmp_path):

@@ -8,17 +8,12 @@ $profile지금은 설계 단계다. Zero가 결정한 방향으로 이 앱 저�
 제목: $title
 GitHub Issue: #$issue
 
-Zero의 게시글:
-$post
-
-Zero의 결정:
+Zero의 요청:
 $decision
-$history
-## 기능 정의서 목록
+$history$spec
+## 변경 유형과 대상 기능
 
-이 프로젝트의 기능 정의서(볼트 `기능/` 폴더) 이름이다. target_feature는 이 목록에서 고르고,
-change_type이 feature_add일 때만 목록에 없는 새 이름을 쓴다.
-$features
+$change_rule
 $revision
 ## 할 일
 

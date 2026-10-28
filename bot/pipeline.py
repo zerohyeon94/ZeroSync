@@ -71,6 +71,16 @@ _WRITING_KINDS = frozenset(
 )
 # 리뷰 담당과 달라야 하는 단계 (R1)
 _AUTHORING_KINDS = _WRITING_KINDS
+# 승인 게이트를 둘 수 있는 앞 단계
+_APPROVABLE = frozenset(
+    {
+        StageKind.PLAN,
+        StageKind.UI_DESIGN,
+        StageKind.DESIGN,
+        StageKind.DIAGNOSE,
+        StageKind.RELEASE_PREP,
+    }
+)
 
 # `when`에 쓸 수 있는 값: 앞 단계 출력의 정해진 불리언 필드나 봇이 아는 결과뿐이다
 Condition = Literal["has_ui_change", "test_failed"]
@@ -132,6 +142,15 @@ class Pipeline(_Model):
         if len(ids) != len(set(ids)):
             raise ValueError("단계 id가 겹친다")
         kinds = [stage.kind for stage in self.stages]
+        # 같은 종류의 단계는 한 번만 둔다. 상태 하나가 단계 하나를 가리키게 하기 위해서다
+        repeated = {k for k in kinds if k is not StageKind.GATE and kinds.count(k) > 1}
+        if repeated:
+            raise ValueError(f"같은 종류의 단계가 둘 이상이다: {', '.join(sorted(repeated))}")
+        for i, kind in enumerate(kinds):
+            if kind is StageKind.GATE and i > 0 and kinds[i - 1] not in _APPROVABLE:
+                raise ValueError(
+                    f"{self.stages[i].id}: gate는 기획·화면 디자인·설계·진단·출시 준비 뒤에만 둔다"
+                )
         if StageKind.IMPLEMENT in kinds:
             implement_at = kinds.index(StageKind.IMPLEMENT)
             # R2: 구현 앞에 승인 게이트
@@ -144,9 +163,6 @@ class Pipeline(_Model):
                 raise ValueError("구현 뒤에 test 단계가 없다")
         if kinds[0] is StageKind.GATE:
             raise ValueError("첫 단계가 gate일 수 없다 (승인할 산출물이 없다)")
-        for previous, stage in zip(self.stages, self.stages[1:], strict=False):
-            if stage.kind is StageKind.GATE and previous.kind is StageKind.GATE:
-                raise ValueError(f"{stage.id}: gate가 연달아 있다")
         if "schedule" in self.triggers and self.schedule is None:
             raise ValueError("triggers에 schedule이 있으면 schedule(cron)이 필요하다 (R5)")
         if "discord_task" in self.triggers and not self.command:
@@ -259,6 +275,34 @@ _DEFAULTS: dict[str, dict] = {
         "budget": {"max_calls": 3, "max_minutes": 30},
     },
 }
+
+
+# ADR-005 기준으로 시작한 작업(v6 이전)을 이어서 진행하는 흐름. 회사 설정에 두지 않는다
+LEGACY = "legacy"
+_LEGACY = {
+    "name": "기능 개발 (ADR-005)",
+    "triggers": ["discord_task"],
+    "command": "/legacy",
+    "stages": [
+        {"id": "design", "kind": "design", "agent": "alpha"},
+        {"id": "approve", "kind": "gate"},
+        {"id": "implement", "kind": "implement", "agent": "alpha"},
+        {"id": "test", "kind": "test"},
+        {"id": "review", "kind": "review", "agent": "delta"},
+        {"id": "merge", "kind": "merge_gate"},
+    ],
+    "budget": {"max_calls": 25, "max_minutes": 240},
+}
+
+
+def legacy_pipeline(org: Org) -> Pipeline | None:
+    """legacy 흐름. 기본 조직의 이름(alpha, delta)이 없으면 쓸 수 없다."""
+    pipeline = Pipeline.model_validate({**_LEGACY, "key": LEGACY})
+    try:
+        check_against_org(pipeline, org)
+    except PipelineError:
+        return None
+    return pipeline
 
 
 def default_pipelines() -> dict[str, Pipeline]:

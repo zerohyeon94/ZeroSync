@@ -19,10 +19,14 @@ Mode = Literal["read_only", "write_worktree"]
 class Stage(StrEnum):
     OPINION = "opinion"
     DEBATE = "debate"
+    PLAN = "plan"
+    UI_DESIGN = "ui_design"
     DESIGN = "design"
+    DIAGNOSE = "diagnose"
     IMPLEMENT = "implement"
     FIX = "fix"
     REVIEW = "review"
+    RELEASE_PREP = "release_prep"
     DOC_SYNC = "doc_sync"
 
 

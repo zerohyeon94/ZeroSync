@@ -166,7 +166,7 @@ def test_rejects_bad_project_key(tmp_path):
 
 def test_rejects_duplicate_forum_channel(tmp_path):
     text = yaml_text().replace("paths:", "  jday:\n" + PROJECT + "paths:")
-    with pytest.raises(ConfigError, match="forum_channel_id가 같다"):
+    with pytest.raises(ConfigError, match="채널 ID가 겹친다"):
         load(tmp_path, text)
 
 
@@ -276,7 +276,6 @@ def test_cli_models_by_stage(tmp_path):
 @pytest.mark.parametrize(
     ("extra", "match"),
     [
-        ("cli:\n  claude_models:\n    review: opus\n", "Claude가 맡지 않는 단계: review"),
         ("cli:\n  codex_models:\n    implement: gpt\n", "Codex가 맡지 않는 단계: implement"),
         ("cli:\n  claude_models:\n    opinon: sonnet\n", "cli.claude_models"),
         ("cli:\n  claude_models:\n    opinion: ''\n", "cli.claude_models"),

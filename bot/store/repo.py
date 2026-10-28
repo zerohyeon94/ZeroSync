@@ -45,6 +45,11 @@ class EventKind(StrEnum):
     REVIEW = "review"
     FIX = "fix"
     DOC_SYNC = "doc_sync"
+    PLAN = "plan"
+    UI_DESIGN = "ui_design"
+    DIAGNOSIS = "diagnosis"
+    RELEASE = "release"
+    REPORT = "report"
     COMMAND = "command"
     MERGE = "merge"
     ERROR = "error"
@@ -67,6 +72,8 @@ UPDATABLE_FIELDS = frozenset(
         "review_limit_bonus",
         "test_limit_bonus",
         "recommended_fixed",
+        "flags",
+        "discord_thread",
     }
 )
 
@@ -110,6 +117,12 @@ class TaskRecord:
     review_limit_bonus: int = 0
     test_limit_bonus: int = 0
     recommended_fixed: int = 0
+    pipeline: str = "legacy"  # pipelines/의 이름. v6 전 작업은 legacy (ADR-005 흐름)
+    flags: str = ""  # 단계 when에 쓰는 사실 (쉼표 목록, 예: has_ui_change)
+
+    @property
+    def flag_set(self) -> frozenset[str]:
+        return frozenset(flag for flag in self.flags.split(",") if flag)
 
 
 @dataclass(frozen=True)
@@ -126,7 +139,7 @@ class EventRecord:
 @dataclass(frozen=True)
 class AgentRunRecord:
     id: str
-    task_id: int
+    task_id: int | None  # 채팅 답은 작업이 없다
     agent: AgentName
     stage: Stage
     exit_code: int | None
@@ -135,6 +148,7 @@ class AgentRunRecord:
     started_at: str
     finished_at: str | None
     engine: str | None = None  # 실행한 엔진 (v3부터 기록)
+    project: str | None = None  # 채팅 답의 제품 (v6부터)
 
 
 RUNNING = "running"
@@ -191,8 +205,11 @@ class Repository:
         state: TaskState,
         event: NewEvent,
         updates: Mapping[str, object] | None = None,
+        pipeline: str | None = None,
     ) -> TaskRecord:
         fields = _checked_updates(updates or {})
+        if pipeline is not None:
+            fields["pipeline"] = pipeline
         now = self._now()
         if state.waits_for_zero:
             fields.setdefault("waiting_since", now)
@@ -332,16 +349,18 @@ class Repository:
         self,
         run_id: str,
         *,
-        task_id: int,
+        task_id: int | None,
         agent: AgentName,
         stage: Stage,
         engine: EngineName | None = None,
+        project: str | None = None,
     ) -> AgentRunRecord:
         async with self._transaction():
             await self._conn.execute(
-                "INSERT INTO agent_runs (id, task_id, agent, stage, status, started_at, engine) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (run_id, task_id, agent, stage.value, RUNNING, self._now(), engine),
+                "INSERT INTO agent_runs "
+                "(id, task_id, agent, stage, status, started_at, engine, project) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (run_id, task_id, agent, stage.value, RUNNING, self._now(), engine, project),
             )
         return await self.get_agent_run(run_id)
 
@@ -477,6 +496,84 @@ class Repository:
             (kind.value, since),
         )
         return int(row["n"]) if row is not None else 0
+
+    # 작업별 사용량 (파이프라인 예산, SPEC Q18)
+
+    async def task_usage(self, task_id: int) -> tuple[int, float]:
+        """이 작업의 에이전트 실행 수와 실행 시간 합(초)."""
+        row = await self._fetchone(
+            "SELECT COUNT(*) AS n, COALESCE(SUM((julianday(COALESCE(finished_at, started_at))"
+            " - julianday(started_at)) * 86400), 0) AS sec FROM agent_runs WHERE task_id = ?",
+            (task_id,),
+        )
+        assert row is not None
+        return int(row["n"]), float(row["sec"])
+
+    # chat_turns (제품 채팅 채널의 대화, ADR-007)
+
+    async def add_chat_turn(
+        self,
+        project: str,
+        actor: ActorName,
+        kind: str,
+        payload: Any,
+        discord_message: str | None = None,
+    ) -> int:
+        async with self._transaction():
+            cursor = await self._conn.execute(
+                "INSERT INTO chat_turns "
+                "(project, actor, kind, payload, discord_message, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    project,
+                    str(actor),
+                    kind,
+                    json.dumps(payload, ensure_ascii=False),
+                    discord_message,
+                    self._now(),
+                ),
+            )
+        assert cursor.lastrowid is not None
+        return cursor.lastrowid
+
+    async def recent_chat_turns(self, project: str, limit: int = 20) -> list[dict[str, Any]]:
+        """작업으로 옮기지 않은 최근 대화. 오래된 것부터."""
+        rows = await self._fetchall(
+            "SELECT * FROM chat_turns WHERE project = ? AND task_id IS NULL "
+            "ORDER BY id DESC LIMIT ?",
+            (project, limit),
+        )
+        return [
+            {**{k: row[k] for k in row.keys()}, "payload": json.loads(row["payload"])}
+            for row in reversed(rows)
+        ]
+
+    async def attach_chat_turns(self, project: str, task_id: int) -> None:
+        """/task로 작업을 열면 그 전 대화를 작업에 붙인다. 다음 대화는 새로 시작한다."""
+        async with self._transaction():
+            await self._conn.execute(
+                "UPDATE chat_turns SET task_id = ? WHERE project = ? AND task_id IS NULL",
+                (task_id, project),
+            )
+
+    # ideas (/idea, ADR-007)
+
+    async def add_idea(self, project: str, body: str) -> int:
+        async with self._transaction():
+            cursor = await self._conn.execute(
+                "INSERT INTO ideas (project, body, status, created_at) VALUES (?, ?, 'open', ?)",
+                (project, body, self._now()),
+            )
+        assert cursor.lastrowid is not None
+        return cursor.lastrowid
+
+    async def list_ideas(self, project: str | None = None) -> list[dict[str, Any]]:
+        sql, params = "SELECT * FROM ideas", []
+        if project is not None:
+            sql += " WHERE project = ?"
+            params.append(project)
+        rows = await self._fetchall(sql + " ORDER BY id", params)
+        return [{k: row[k] for k in row.keys()} for row in rows]
 
     # bot_state, schedule_runs
 

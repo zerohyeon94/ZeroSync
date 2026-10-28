@@ -26,7 +26,7 @@ LEGACY_AGENTS: dict[str, tuple[str, EngineName]] = {
 }
 
 # Codex 러너는 읽기 전용 샌드박스로만 실행된다 (운영 규약 1.3)
-READ_ONLY_STAGES = frozenset({Stage.OPINION, Stage.DEBATE, Stage.REVIEW})
+READ_ONLY_STAGES = frozenset({Stage.OPINION, Stage.DEBATE, Stage.REVIEW, Stage.DIAGNOSE})
 
 _AGENT_KEY = re.compile(r"^[a-z][a-z0-9]{0,19}$")
 ORG_FILE = "org.yaml"

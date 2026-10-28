@@ -12,11 +12,12 @@ import pytest
 
 from bot.config import load_config
 from bot.discord_io.chat import DiscordChat
-from bot.discord_io.client import EMPTY_POST, ZeroSyncBot, project_contexts
+from bot.discord_io.client import POST_HINT, ZeroSyncBot, project_contexts
 from bot.discord_io.rules import (
     IncomingMessage,
     MessageKind,
     author_name,
+    chat_command_error,
     classify,
     command_error,
     split_text,
@@ -30,6 +31,7 @@ from bot.workflow.state import CommandName, TaskState
 ZERO = 42
 FORUM = 100
 OPS = 300
+CHAT = 600
 
 
 def run(coro):
@@ -60,18 +62,28 @@ def message(**overrides):
         ({"from_bot": True}, MessageKind.IGNORE),  # 봇·웹훅 (자기 게시 반복 방지)
         ({"parent_id": 999}, MessageKind.IGNORE),  # 등록되지 않은 포럼
         ({"parent_id": None}, MessageKind.IGNORE),  # 스레드가 아닌 채널
+        ({"parent_id": None, "channel_id": CHAT}, MessageKind.CHAT),  # 제품 채팅 채널
+        ({"parent_id": None, "channel_id": CHAT, "author_id": 7}, MessageKind.IGNORE),
     ],
 )
 def test_classify(overrides, expected):
-    assert classify(message(**overrides), zero_user_id=ZERO, forum_ids={FORUM}) is expected
+    kind = classify(message(**overrides), zero_user_id=ZERO, forum_ids={FORUM}, chat_ids={CHAT})
+    assert kind is expected
 
 
 def test_command_error():
     ok = {"zero_user_id": ZERO, "forum_ids": {FORUM}}
     assert command_error(user_id=ZERO, parent_id=FORUM, **ok) is None
     assert "Zero만" in command_error(user_id=7, parent_id=FORUM, **ok)
-    assert "포럼의 게시글 안에서만" in command_error(user_id=ZERO, parent_id=None, **ok)
-    assert "포럼의 게시글 안에서만" in command_error(user_id=ZERO, parent_id=999, **ok)
+    assert "포스트 안에서만" in command_error(user_id=ZERO, parent_id=None, **ok)
+    assert "포스트 안에서만" in command_error(user_id=ZERO, parent_id=999, **ok)
+
+
+def test_chat_command_error():
+    ok = {"zero_user_id": ZERO, "chat_ids": {CHAT}}
+    assert chat_command_error(user_id=ZERO, channel_id=CHAT, **ok) is None
+    assert "Zero만" in chat_command_error(user_id=7, channel_id=CHAT, **ok)
+    assert "채팅 채널에서만" in chat_command_error(user_id=ZERO, channel_id=FORUM, **ok)
 
 
 def test_split_text():
@@ -218,6 +230,7 @@ def bot(tmp_path):
         "    repo: /repo\n"
         "    github: owner/GagaeSsi\n"
         "    test: swift test\n"
+        f'    chat_channel_id: "{CHAT}"\n'
         "    vault_dir: d\n    vault_hub: h.md\n    vault_tag: brain/g\n    vault_slug: g\n"
         "paths:\n  vault_projects: /vault\n  company: /nonexistent/zerosync-company\n",
         encoding="utf-8",
@@ -239,8 +252,24 @@ def bot(tmp_path):
     calls = []
 
     class Engine:
-        async def on_post(self, **kwargs):
-            calls.append(("post", kwargs))
+        pipelines: dict = {}
+
+        def pipeline_for_command(self, command):
+            return object() if command in ("/task feature", "/task bug", "/release") else None
+
+        async def on_chat(self, project, text, *, message_id=None):
+            calls.append(("chat", project, text, message_id))
+
+        async def task_from_chat(self, project, command, title):
+            calls.append(("task", project, command, title))
+
+        async def debate(self, project):
+            calls.append(("debate", project))
+            return ""
+
+        async def add_idea(self, project, text):
+            calls.append(("idea", project, text))
+            return 7
 
         async def on_message(self, thread, text, *, message_id=None):
             calls.append(("message", thread, text, message_id))
@@ -270,21 +299,72 @@ async def drain(bot):
         await asyncio.gather(*bot._background)
 
 
-def test_forum_post_and_reply_reach_engine(bot):
+def test_forum_post_gets_hint_and_reply_reaches_engine(bot):
+    hints = []
+
+    async def post(thread, author, text, **kwargs):
+        hints.append((thread, author, text))
+
+    bot.chat.post = post
+
     async def main():
-        await bot.on_message(discord_message(message_id=500, content="  "))
+        # Zero가 포럼에 직접 연 포스트는 작업을 만들지 않고 안내한다 (ADR-007)
+        await bot.on_message(discord_message(message_id=700, channel_id=700, content="  "))
         await bot.on_message(discord_message(message_id=501, content="추가 질문"))
         await bot.on_message(discord_message(message_id=502, author_id=7))
         await drain(bot)
 
     run(main())
-    assert bot.calls == [
-        (
-            "post",
-            {"project": "gagaessi", "thread": "500", "title": "예산 배너", "text": EMPTY_POST},
-        ),
-        ("message", "500", "추가 질문", "501"),
-    ]
+    assert bot.calls == [("message", "500", "추가 질문", "501")]
+    assert hints == [("700", "bot", POST_HINT)]
+
+
+def test_chat_message_reaches_engine(bot):
+    chat = SimpleNamespace(id=CHAT, name="gagaessi-chat")
+    message = SimpleNamespace(
+        id=900,
+        channel=chat,
+        author=SimpleNamespace(id=ZERO, bot=False),
+        content="  배너 어때?  ",
+        webhook_id=None,
+    )
+
+    async def main():
+        await bot.on_message(message)
+        await drain(bot)
+
+    run(main())
+    assert bot.calls == [("chat", "gagaessi", "배너 어때?", "900")]
+
+
+def test_chat_commands_start_work(bot):
+    async def main():
+        task = interaction(channel_id=CHAT, parent_id=None)
+        await bot.run_task(task, "/task feature", "예산 배너")
+        release = interaction(channel_id=CHAT, parent_id=None)
+        await bot.run_task(release, "/release", "1.0.0")
+        idea = interaction(channel_id=CHAT, parent_id=None)
+        await bot.run_idea(idea, "위젯")
+        debate = interaction(channel_id=CHAT, parent_id=None)
+        await bot.run_debate(debate)
+        wrong = interaction()  # 포럼 포스트 안에서는 쓸 수 없다
+        await bot.run_task(wrong, "/task bug", "x")
+        await drain(bot)
+        return task, idea, wrong
+
+    task, idea, wrong = run(main())
+    assert task.response.sent == [("/task feature 예산 배너", {"silent": True})]
+    assert idea.response.sent == [("아이디어 #7로 기록했다: 위젯", {"silent": True})]
+    assert "채팅 채널에서만" in wrong.response.sent[0][0]
+    # /idea는 바로 기록하고, 나머지는 백그라운드에서 실행한다
+    assert sorted(bot.calls) == sorted(
+        [
+            ("task", "gagaessi", "/task feature", "예산 배너"),
+            ("task", "gagaessi", "/release", "1.0.0"),
+            ("idea", "gagaessi", "위젯"),
+            ("debate", "gagaessi"),
+        ]
+    )
 
 
 class FakeResponse:
@@ -318,20 +398,20 @@ def test_fix_command_passes_recommended_arg(bot):
 def test_command_is_echoed_and_sent_to_engine(bot):
     async def main():
         it = interaction()
-        await bot.run_command(it, CommandName.DECIDE, "배너로 간다")
+        await bot.run_command(it, CommandName.REVISE, "배너 색")
         await drain(bot)
         return it
 
     it = run(main())
-    assert it.response.sent == [("/decide 배너로 간다", {"silent": True})]
-    assert bot.calls == [("command", "500", CommandName.DECIDE, "배너로 간다")]
+    assert it.response.sent == [("/revise 배너 색", {"silent": True})]
+    assert bot.calls == [("command", "500", CommandName.REVISE, "배너 색")]
 
 
 @pytest.mark.parametrize(
     ("kwargs", "expected"),
     [
         ({"user_id": 7}, "Zero만"),
-        ({"parent_id": None}, "포럼의 게시글 안에서만"),
+        ({"parent_id": None}, "포스트 안에서만"),
         ({"channel_id": 999}, "연결된 작업이 없다"),
     ],
 )
@@ -368,8 +448,8 @@ def test_intents_include_message_content(bot):
     assert isinstance(bot.guild_ref, discord.Object) and bot.guild_ref.id == 1
     names = {command.name for command in bot.tree.get_commands(guild=bot.guild_ref)}
     assert names == {
-        "debate", "decide", "approve", "revise", "fix", "resume", "stop", "status", "ping",
-        "hire",
+        "task", "release", "debate", "idea", "approve", "revise", "skip", "fix",
+        "resume", "stop", "hire", "status", "ping",
     }  # fmt: skip
     project = project_contexts(bot.config)["gagaessi"]
     assert project.github.repo == "owner/GagaeSsi"

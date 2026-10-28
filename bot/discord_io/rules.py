@@ -20,8 +20,9 @@ SPLIT_LIMIT = 1900
 
 
 class MessageKind(StrEnum):
-    POST = "post"  # 포럼 게시글(스레드의 첫 메시지) → 작업 생성
-    REPLY = "reply"  # 게시글 안의 일반 메시지 → 추가 질문
+    POST = "post"  # Zero가 포럼에 직접 연 포스트 → /task 안내 (ADR-007)
+    REPLY = "reply"  # 포스트 안의 일반 메시지 → 기록
+    CHAT = "chat"  # 제품 채팅 채널 메시지 → 팀장 답 (ADR-007)
     IGNORE = "ignore"
 
 
@@ -35,11 +36,17 @@ class IncomingMessage:
 
 
 def classify(
-    message: IncomingMessage, *, zero_user_id: int, forum_ids: Collection[int]
+    message: IncomingMessage,
+    *,
+    zero_user_id: int,
+    forum_ids: Collection[int],
+    chat_ids: Collection[int] = (),
 ) -> MessageKind:
-    """Zero가 프로젝트 포럼에 쓴 메시지만 처리한다. 그 밖의 입력은 무시한다 (SPEC 4)."""
+    """Zero가 제품 채팅 채널이나 포럼 포스트에 쓴 메시지만 처리한다 (SPEC 4, 6.1)."""
     if message.from_bot or message.author_id != zero_user_id:
         return MessageKind.IGNORE
+    if message.parent_id is None and message.channel_id in chat_ids:
+        return MessageKind.CHAT
     if message.parent_id is None or message.parent_id not in forum_ids:
         return MessageKind.IGNORE
     # 포럼 게시글의 첫 메시지 ID는 스레드 ID와 같다
@@ -51,11 +58,22 @@ def classify(
 def command_error(
     *, user_id: int, zero_user_id: int, parent_id: int | None, forum_ids: Collection[int]
 ) -> str | None:
-    """작업 명령을 쓸 수 없는 이유. 쓸 수 있으면 None."""
+    """포스트 안의 진행 명령(/approve 등)을 쓸 수 없는 이유. 쓸 수 있으면 None."""
     if user_id != zero_user_id:
         return "이 봇의 명령은 Zero만 쓸 수 있다."
     if parent_id is None or parent_id not in forum_ids:
-        return "이 명령은 프로젝트 포럼의 게시글 안에서만 쓸 수 있다."
+        return "이 명령은 제품 포럼의 포스트 안에서만 쓸 수 있다."
+    return None
+
+
+def chat_command_error(
+    *, user_id: int, zero_user_id: int, channel_id: int, chat_ids: Collection[int]
+) -> str | None:
+    """채팅 명령(/task, /release, /debate, /idea)을 쓸 수 없는 이유 (ADR-007)."""
+    if user_id != zero_user_id:
+        return "이 봇의 명령은 Zero만 쓸 수 있다."
+    if channel_id not in chat_ids:
+        return "이 명령은 제품 채팅 채널에서만 쓸 수 있다."
     return None
 
 

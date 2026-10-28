@@ -97,7 +97,54 @@ CREATE TABLE schedule_runs (
 CREATE INDEX agent_runs_agent ON agent_runs(agent, started_at);
 """
 
-MIGRATIONS: tuple[str, ...] = (_V1, _V2, _V3, _V4, _V5)
+# v6: 파이프라인 선언으로 진행 (SPEC 3.5, ADR-007). 이전 작업은 legacy(ADR-005 흐름)
+_V6 = """
+ALTER TABLE tasks ADD COLUMN pipeline TEXT NOT NULL DEFAULT 'legacy';
+ALTER TABLE tasks ADD COLUMN flags TEXT NOT NULL DEFAULT '';
+CREATE TABLE chat_turns (
+  id               INTEGER PRIMARY KEY,
+  project          TEXT NOT NULL,
+  actor            TEXT NOT NULL,
+  kind             TEXT NOT NULL,
+  payload          TEXT NOT NULL,
+  discord_message  TEXT,
+  task_id          INTEGER REFERENCES tasks(id),
+  created_at       TEXT NOT NULL
+);
+CREATE INDEX chat_turns_project ON chat_turns(project, id);
+-- 채팅 답은 작업이 없으므로 agent_runs.task_id가 비어도 되게 테이블을 다시 만든다
+CREATE TABLE agent_runs_v6 (
+  id               TEXT PRIMARY KEY,
+  task_id          INTEGER REFERENCES tasks(id),
+  agent            TEXT NOT NULL,
+  stage            TEXT NOT NULL,
+  exit_code        INTEGER,
+  status           TEXT NOT NULL,
+  log_path         TEXT,
+  started_at       TEXT NOT NULL,
+  finished_at      TEXT,
+  engine           TEXT,
+  project          TEXT
+);
+INSERT INTO agent_runs_v6
+  (id, task_id, agent, stage, exit_code, status, log_path, started_at, finished_at, engine)
+  SELECT id, task_id, agent, stage, exit_code, status, log_path, started_at, finished_at, engine
+  FROM agent_runs;
+DROP TABLE agent_runs;
+ALTER TABLE agent_runs_v6 RENAME TO agent_runs;
+CREATE INDEX agent_runs_task ON agent_runs(task_id);
+CREATE INDEX agent_runs_agent ON agent_runs(agent, started_at);
+CREATE TABLE ideas (
+  id               INTEGER PRIMARY KEY,
+  project          TEXT NOT NULL,
+  body             TEXT NOT NULL,
+  status           TEXT NOT NULL,
+  task_id          INTEGER REFERENCES tasks(id),
+  created_at       TEXT NOT NULL
+);
+"""
+
+MIGRATIONS: tuple[str, ...] = (_V1, _V2, _V3, _V4, _V5, _V6)
 SCHEMA_VERSION = len(MIGRATIONS)
 
 

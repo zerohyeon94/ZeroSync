@@ -1,4 +1,4 @@
-"""설계부터 merge까지의 단계 작업 (운영 규약 1.5, 1.7~1.9, 3.3, 4장).
+"""파이프라인 단계 작업 (운영 규약 1.5, 1.7~1.9, 3.3, 3.9, 4장, ADR-007).
 
 Engine이 이 클래스를 상속해 쓴다. 각 작업은 작업마다 하나씩(Engine._stage) 실행되고,
 끝나면 (내부 이벤트, 기록할 이벤트)를 돌려준다. 엔진이 그 이벤트로 다음 상태를 정한다.
@@ -6,44 +6,73 @@ Engine이 이 클래스를 상속해 쓴다. 각 작업은 작업마다 하나�
 - 앱 저장소에 쓰는 것은 봇 전용 worktree(`<worktrees>/<project>-<Issue>`)뿐이다 (3.3)
 - push는 GitOps가 보호 조건(4.7)을 검사한 뒤에만 한다. force push는 하지 않는다
 - 에이전트 커밋은 push 전에 메시지 형식(4.4)을 검사하고, 틀리면 1회 고쳐 달라고 다시 요청한다
+- 볼트에는 문서 반영 승인 뒤 허용 경로(기능 정의서, 허브)만 쓴다 (3.4)
 """
 
 from __future__ import annotations
 
 import logging
+import re
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel, ValidationError
+
 from bot.agents.base import Stage
 from bot.github.rules import commit_message_problems
+from bot.pipeline import Pipeline, StageDecl, StageKind
 from bot.prompts import (
     design_prompt,
+    design_text,
+    diagnose_prompt,
+    diagnosis_text,
+    doc_sync_prompt,
     fix_prompt,
     implement_prompt,
+    plan_prompt,
+    plan_text,
+    release_prep_prompt,
     review_prompt,
+    ui_design_prompt,
+    ui_text,
 )
 from bot.render import render_format_error, render_notice
+from bot.render.opinion import split_attachment
 from bot.render.work import (
     ReviewRound,
+    SpecPart,
     render_design,
+    render_diagnosis,
+    render_doc_sync,
     render_findings,
     render_implementation,
     render_issue_body,
+    render_plan,
     render_pr_body,
+    render_release_prep,
     render_review,
     render_test_report,
+    render_ui_design,
 )
 from bot.schemas import (
     FEATURE_NAMES,
     ISSUE_NUMBER,
+    ChangeSummary,
     ChangeType,
     DesignSummary,
+    DiagnosisReport,
+    DocSyncProposal,
     ImplementationReport,
+    PlanSummary,
+    ReleasePrep,
     Review,
+    UiDesignSummary,
 )
 from bot.store import Actor, EventKind, NewEvent
 from bot.store.repo import TaskRecord
 from bot.testrun import TestReport
+from bot.workflow.chat import Attachment
 from bot.workflow.mentions import Moment, should_mention
 from bot.workflow.state import (
     FixSource,
@@ -67,6 +96,10 @@ TYPE_LABELS = {
 }
 # 리뷰 프롬프트에 넣는 diff 최대 길이. 넘으면 잘라 내고 표시한다
 MAX_DIFF_CHARS = 80_000
+APPROVE_HINT = "\n\n`/approve`로 승인하거나 `/revise <요청>`으로 고친다."
+_VERSION = re.compile(r"\d+(?:\.\d+){1,3}")
+
+PromptFor = Callable[[TaskRecord, "list[str] | None", "ChangeSummary | None", str], Awaitable[str]]
 
 
 class WorkStages:
@@ -82,6 +115,15 @@ class WorkStages:
     _org: Any
     _name: Any
     _persona: Any
+    _vault: Any
+    _clock: Any
+    _ask: Any
+    _say: Any
+    _post: Any
+    _postable: Any
+    _side_effect: Any
+    _advance: Any
+    _pipeline: Any
 
     # 공통
 
@@ -97,19 +139,77 @@ class WorkStages:
     def _web(self, task: TaskRecord, path: str) -> str:
         return f"https://github.com/{self._github(task).repo}/{path}"
 
+    def _pipe(self, task: TaskRecord) -> Pipeline:
+        pipeline = self._pipeline(task)
+        if pipeline is None:
+            raise RuntimeError(f"작업 {task.id}의 파이프라인 {task.pipeline}이 없다")
+        return pipeline
+
+    def _next_is_gate(self, task: TaskRecord, stage: StageDecl) -> bool:
+        pipeline = self._pipe(task)
+        i = pipeline.index(stage.id)
+        return i + 1 < len(pipeline.stages) and pipeline.stages[i + 1].kind is StageKind.GATE
+
     async def _latest(self, task_id: int, kind: EventKind) -> dict[str, Any] | None:
         events = await self._repo.list_events(task_id, {kind})
         return events[-1].payload if events else None
 
     async def _decision(self, task_id: int) -> str:
+        """작업을 시작한 Zero의 원문과 채팅 의견 요약."""
         payload = await self._latest(task_id, EventKind.DECISION)
-        return str(payload.get("text", "")) if payload else ""
+        if not payload:
+            return ""
+        text = str(payload.get("text", ""))
+        context = str(payload.get("context", "")).strip()
+        return f"{text}\n\n채팅 의견 요약:\n{context}" if context else text
 
-    async def _summary(self, task_id: int) -> DesignSummary:
+    async def _plan_summary(self, task_id: int) -> PlanSummary | None:
+        payload = await self._latest(task_id, EventKind.PLAN)
+        return PlanSummary.model_validate(payload["summary"]) if payload else None
+
+    async def _ui_summary(self, task_id: int) -> UiDesignSummary | None:
+        payload = await self._latest(task_id, EventKind.UI_DESIGN)
+        return UiDesignSummary.model_validate(payload["summary"]) if payload else None
+
+    async def _design_summary(self, task_id: int) -> DesignSummary | None:
         payload = await self._latest(task_id, EventKind.DESIGN)
-        if payload is None:
-            raise RuntimeError("승인된 설계가 없다")
-        return DesignSummary.model_validate(payload["summary"])
+        return DesignSummary.model_validate(payload["summary"]) if payload else None
+
+    async def _diagnosis(self, task_id: int) -> DiagnosisReport | None:
+        payload = await self._latest(task_id, EventKind.DIAGNOSIS)
+        return DiagnosisReport.model_validate(payload["report"]) if payload else None
+
+    async def _change(self, task_id: int) -> ChangeSummary | None:
+        """흐름의 첫 단계가 정한 변경 유형·대상 기능·slug (기획 → 진단 → 설계 순)."""
+        plan = await self._plan_summary(task_id)
+        if plan is not None:
+            return plan
+        diagnosis = await self._diagnosis(task_id)
+        if diagnosis is not None and diagnosis.change() is not None:
+            return diagnosis.change()
+        return await self._design_summary(task_id)
+
+    async def _specs(self, task_id: int) -> list[SpecPart]:
+        """승인된 산출물 (구현·수정·리뷰·PR이 함께 참조한다)."""
+        parts = []
+        if (plan := await self._plan_summary(task_id)) is not None:
+            parts.append(SpecPart("기획", plan.plan_doc, plan.summary, plan_text(plan)))
+        if (ui := await self._ui_summary(task_id)) is not None:
+            parts.append(SpecPart("화면 디자인", ui.design_doc, ui.summary, ui_text(ui)))
+        if (design := await self._design_summary(task_id)) is not None:
+            parts.append(SpecPart("설계", design.design_doc, design.summary, design_text(design)))
+        if (diagnosis := await self._diagnosis(task_id)) is not None:
+            parts.append(SpecPart("진단", None, diagnosis.summary, diagnosis_text(diagnosis)))
+        return parts
+
+    async def _spec_text(self, task_id: int) -> str:
+        return "\n\n".join(part.text for part in await self._specs(task_id))
+
+    async def _spec_docs(self, task_id: int) -> str:
+        lines = [
+            f"{part.label} 전문: `{part.doc}`" for part in await self._specs(task_id) if part.doc
+        ]
+        return "\n".join(lines) or "문서 없음 (진단 보고를 기준으로 고친다)"
 
     async def _latest_report(self, task_id: int) -> ImplementationReport | None:
         events = await self._repo.list_events(task_id, {EventKind.IMPL, EventKind.FIX})
@@ -131,6 +231,24 @@ class WorkStages:
         if task.worktree is None:
             raise RuntimeError("작업 worktree가 없다")
         return Path(task.worktree)
+
+    async def _ensure_worktree(self, task: TaskRecord) -> tuple[TaskRecord, Path]:
+        """봇 전용 worktree를 develop 최신에서 만든다 (브랜치 없이, 4.3)."""
+        if task.worktree is not None:
+            return task, Path(task.worktree)
+        project = self._project(task)
+        name = f"{task.project}-{task.issue_number or f't{task.id}'}"
+        worktree = self._worktrees / name
+        await self._git.prepare_worktree(project.repo, worktree, project.base_branch)
+        task = await self._repo.update_fields(task.id, {"worktree": str(worktree)})
+        return task, worktree
+
+    async def _ensure_issue(self, task: TaskRecord) -> TaskRecord:
+        if task.issue_number is None:
+            # 재시작 등으로 Issue 없이 단계에 들어왔다
+            await self._create_issue(task.id)
+            task = await self._repo.get_task(task.id)
+        return task
 
     async def _commit_problems(self, task: TaskRecord, worktree: Path, before: int) -> list[str]:
         """에이전트 작업 뒤 확인: 커밋하지 않은 변경, 새 커밋 유무, 커밋 메시지 형식 (4.4)."""
@@ -161,25 +279,30 @@ class WorkStages:
         else:
             reason = f"{name} {stage} 출력이 재요청 후에도 맞지 않았다"
             rendered = render_format_error(answer.raw, answer.error)
-            await self._chat.post(
-                task.discord_thread, answer.agent, rendered.text, attachments=rendered.attachments
-            )
+            await self._post(task, answer.agent, rendered.text, Moment.NOTICE, rendered.attachments)
         payload = {"stage": stage, "reason": reason, "error": answer.error, "raw": answer.raw}
         return StageFailed(reason), NewEvent(Actor.BOT, EventKind.ERROR, payload)
 
+    def _context(self, task: TaskRecord) -> tuple[dict[str, Any], list[str] | None]:
+        features = self._project(task).feature_names()
+        context: dict[str, Any] = {}
+        if task.issue_number is not None:
+            context[ISSUE_NUMBER] = task.issue_number
+        if features is not None:
+            context[FEATURE_NAMES] = features
+        return context, None if features is None else sorted(features)
+
     # Issue (운영 규약 1.8)
 
-    async def _create_issue(self, task_id: int) -> Outcome | None:
+    async def _create_issue(self, task_id: int) -> None:
         task = await self._repo.get_task(task_id)
         if task.issue_number is not None:
-            return None
-        decision = await self._decision(task_id)
-        latest = await self._latest_opinions(task_id)
-        opinions = [(self._name(agent), latest[agent]) for agent in latest]
+            return
+        payload = await self._latest(task_id, EventKind.DECISION) or {}
         body = render_issue_body(
-            decision=decision,
-            post=await self._post_text(task),
-            opinions=opinions,
+            decision=str(payload.get("text", "")),
+            post=str(payload.get("context", "")) or "(채팅 의견 없음)",
+            opinions=[],
             discord_url=self._thread_url(task.discord_thread),
         )
         number = await self._github(task).create_issue(task.title, body, ["zerosync"])
@@ -188,91 +311,13 @@ class WorkStages:
         await self._say(
             task, render_notice(NoticeCode.DECISION_RECORDED, f"Issue #{number}: {url}")
         )
-        return None
 
-    # 설계 (운영 규약 3.3, 4.3)
+    # 브랜치 (4.3)
 
-    async def _design(self, task_id: int, revision: str) -> Outcome:
-        task = await self._repo.get_task(task_id)
-        if task.issue_number is None:
-            # 재시작 등으로 Issue 없이 설계에 들어왔다
-            await self._create_issue(task_id)
-            task = await self._repo.get_task(task_id)
-        project = self._project(task)
-        issue = task.issue_number
-        worktree = (
-            Path(task.worktree) if task.worktree else self._worktrees / f"{task.project}-{issue}"
-        )
-        await self._git.prepare_worktree(project.repo, worktree, project.base_branch)
-        task = await self._repo.update_fields(task.id, {"worktree": str(worktree)})
-        before = len(await self._git.commits(worktree, project.base_branch))
-        previous = None
-        if await self._latest(task_id, EventKind.DESIGN):
-            previous = await self._summary(task_id)
+    async def _push_branch(self, task: TaskRecord, worktree: Path, branch: str) -> str:
+        """작업 브랜치를 만들거나(첫 문서 단계) 이름을 바꾸고 push한다.
 
-        features = project.feature_names()
-        context: dict[str, Any] = {ISSUE_NUMBER: issue}
-        if features is not None:
-            context[FEATURE_NAMES] = features
-
-        async def verify(summary: DesignSummary) -> list[str]:
-            problems = []
-            if not (worktree / summary.design_doc).is_file():
-                problems.append(f"{summary.design_doc} 파일이 없다")
-            return problems + await self._commit_problems(task, worktree, before)
-
-        agent = self._org.roles.design
-        verb = "설계를 시작한다" if not revision else "설계를 고친다"
-        await self._say(task, f"{self._name(agent)}이 {verb}.")
-        prompt = design_prompt(
-            await self._persona(agent),
-            title=task.title,
-            post=await self._post_text(task),
-            decision=await self._decision(task_id),
-            issue=issue,
-            features=None if features is None else sorted(features),
-            history=await self._history(task),
-            revision=revision,
-            previous=previous,
-        )
-        answer = await self._ask(
-            task,
-            agent,
-            Stage.DESIGN,
-            prompt,
-            model=DesignSummary,
-            mode="write_worktree",
-            cwd=worktree,
-            context=context,
-            resume=task.claude_session if revision else None,
-            verify=verify,
-        )
-        if answer.result is None:
-            return await self._failed(task, "설계", answer)
-        summary: DesignSummary = answer.result
-        task = await self._repo.update_fields(task.id, {"claude_session": answer.session_id})
-        branch = await self._push_design_branch(task, worktree, summary.branch_name(issue))
-
-        doc_url = self._web(task, f"blob/{branch}/{summary.design_doc}")
-        await self._github(task).comment_issue(issue, render_design(summary, doc_url=doc_url))
-        message_id = await self._chat.post(
-            task.discord_thread,
-            agent,
-            render_design(summary, doc_url=doc_url)
-            + "\n\n`/approve`로 승인하거나 `/revise <요청>`으로 고친다.",
-            mention=should_mention(Moment.DESIGN_READY),
-        )
-        payload = {
-            "summary": summary.model_dump(mode="json"),
-            "revision": revision,
-            "branch": branch,
-        }
-        return StageSucceeded(), NewEvent(agent, EventKind.DESIGN, payload, message_id)
-
-    async def _push_design_branch(self, task: TaskRecord, worktree: Path, branch: str) -> str:
-        """설계 커밋에 작업 브랜치를 만들어 push한다 (4.3).
-
-        설계 수정으로 이름이 바뀌면 옛 원격 브랜치를 지운다.
+        수정으로 이름이 바뀌면 옛 원격 브랜치를 지운다.
         """
         old = task.branch
         if old is None:
@@ -287,44 +332,298 @@ class WorkStages:
         return branch
 
     async def _apply_type_label(self, task: TaskRecord) -> None:
-        summary = await self._summary(task.id)
+        change = await self._change(task.id)
+        if task.issue_number is not None and change is not None:
+            labels = [TYPE_LABELS[change.change_type]]
+            await self._github(task).add_labels(task.issue_number, labels)
+
+    async def _document_stage(
+        self,
+        task: TaskRecord,
+        stage: StageDecl,
+        revision: str,
+        *,
+        label: str,
+        prompt_for: PromptFor,
+        model: type[BaseModel],
+        doc_of: Callable[[Any], str],
+        branch_of: Callable[[Any, TaskRecord], str],
+        render: Callable[..., str],
+        kind: EventKind,
+        agent_stage: Stage,
+        flags_of: Callable[[Any], frozenset[str]] | None = None,
+    ) -> Outcome:
+        """기획·화면 디자인·설계: worktree에 문서를 쓰고 커밋한 뒤 브랜치를 push한다."""
+        task = await self._ensure_issue(task)
+        task, worktree = await self._ensure_worktree(task)
+        before = len(await self._git.commits(worktree, self._project(task).base_branch))
+        context, features = self._context(task)
+        change = await self._change(task.id)
+
+        async def verify(summary: Any) -> list[str]:
+            problems = []
+            if not (worktree / doc_of(summary)).is_file():
+                problems.append(f"{doc_of(summary)} 파일이 없다")
+            approved = change is not None and kind is EventKind.DESIGN
+            if approved and summary.change_fields() != change.change_fields():
+                # 기획·진단에서 승인된 변경 필드를 설계가 바꾸지 않는다
+                problems.append("변경 유형·대상 기능·slug·제목·영역은 승인된 값을 그대로 쓴다")
+            return problems + await self._commit_problems(task, worktree, before)
+
+        agent = stage.agent
+        verb = f"{label}을 시작한다" if not revision else f"{label}을 고친다"
+        await self._say(task, f"{self._name(agent)}이 {verb}.")
+        prompt = await prompt_for(task, features, change, revision)
+        answer = await self._ask(
+            task,
+            agent,
+            agent_stage,
+            prompt,
+            model=model,
+            mode="write_worktree",
+            cwd=worktree,
+            context=context,
+            resume=task.claude_session if revision else None,
+            verify=verify,
+        )
+        if answer.result is None:
+            return await self._failed(task, label, answer)
+        summary = answer.result
+        task = await self._repo.update_fields(task.id, {"claude_session": answer.session_id})
+        branch = await self._push_branch(task, worktree, branch_of(summary, task))
+        doc_url = self._web(task, f"blob/{branch}/{doc_of(summary)}")
+        text = render(summary, doc_url=doc_url)
         if task.issue_number is not None:
-            await self._github(task).add_labels(
-                task.issue_number, [TYPE_LABELS[summary.change_type]]
+            await self._github(task).comment_issue(task.issue_number, text)
+        gate = self._next_is_gate(task, stage)
+        message_id = await self._post(
+            task,
+            agent,
+            text + (APPROVE_HINT if gate else ""),
+            Moment.DESIGN_READY if gate else Moment.STAGE_DONE,
+        )
+        payload = {
+            "summary": summary.model_dump(mode="json"),
+            "revision": revision,
+            "branch": branch,
+        }
+        flags = flags_of(summary) if flags_of else frozenset()
+        return StageSucceeded(flags), NewEvent(agent, kind, payload, message_id)
+
+    # 기획 (기획팀, ADR-007)
+
+    async def _plan(self, task_id: int, stage: StageDecl, revision: str) -> Outcome:
+        task = await self._repo.get_task(task_id)
+
+        async def prompt_for(
+            task: TaskRecord, features: list[str] | None, change: Any, revision: str
+        ) -> str:
+            previous = await self._plan_summary(task.id) if revision else None
+            return plan_prompt(
+                await self._persona(stage.agent),
+                title=task.title,
+                decision=await self._decision(task.id),
+                issue=task.issue_number,
+                features=features,
+                revision=revision,
+                previous=previous,
             )
 
-    # 구현과 수정
+        return await self._document_stage(
+            task,
+            stage,
+            revision,
+            label="기획",
+            prompt_for=prompt_for,
+            model=PlanSummary,
+            doc_of=lambda s: s.plan_doc,
+            branch_of=lambda s, t: s.branch_name(t.issue_number),
+            render=render_plan,
+            kind=EventKind.PLAN,
+            agent_stage=Stage.PLAN,
+            flags_of=lambda s: frozenset({"has_ui_change"}) if s.has_ui_change else frozenset(),
+        )
 
-    async def _implement(self, task_id: int) -> Outcome:
+    # 화면 디자인 (디자인팀, ADR-007)
+
+    async def _ui_design(self, task_id: int, stage: StageDecl, revision: str) -> Outcome:
         task = await self._repo.get_task(task_id)
-        summary = await self._summary(task_id)
-        agent = self._org.roles.implement
+        approved = await self._change(task_id)
+        if approved is None:
+            raise RuntimeError("화면 디자인 전에 승인된 기획이 없다")
+
+        async def prompt_for(
+            task: TaskRecord, features: list[str] | None, change: Any, revision: str
+        ) -> str:
+            previous = await self._ui_summary(task.id) if revision else None
+            system = self._project(task).design_system_url or (
+                "아직 없다. 기존 화면 코드에서 색·글꼴·간격 규칙을 읽어 명세에 적는다"
+            )
+            return ui_design_prompt(
+                await self._persona(stage.agent),
+                title=task.title,
+                issue=task.issue_number,
+                slug=approved.slug,
+                spec=await self._spec_text(task.id),
+                design_system=system,
+                revision=revision,
+                previous=previous,
+            )
+
+        return await self._document_stage(
+            task,
+            stage,
+            revision,
+            label="화면 디자인",
+            prompt_for=prompt_for,
+            model=UiDesignSummary,
+            doc_of=lambda s: s.design_doc,
+            branch_of=lambda s, t: t.branch or approved.branch_name(t.issue_number),
+            render=render_ui_design,
+            kind=EventKind.UI_DESIGN,
+            agent_stage=Stage.UI_DESIGN,
+        )
+
+    # 설계 (개발팀)
+
+    async def _design(self, task_id: int, stage: StageDecl, revision: str) -> Outcome:
+        task = await self._repo.get_task(task_id)
+
+        async def prompt_for(
+            task: TaskRecord, features: list[str] | None, change: Any, revision: str
+        ) -> str:
+            previous = await self._design_summary(task.id) if revision else None
+            return design_prompt(
+                await self._persona(stage.agent),
+                title=task.title,
+                decision=await self._decision(task.id),
+                issue=task.issue_number,
+                features=features,
+                revision=revision,
+                previous=previous,
+                spec=await self._spec_text(task.id),
+                change=change,
+            )
+
+        return await self._document_stage(
+            task,
+            stage,
+            revision,
+            label="설계",
+            prompt_for=prompt_for,
+            model=DesignSummary,
+            doc_of=lambda s: s.design_doc,
+            branch_of=lambda s, t: s.branch_name(t.issue_number),
+            render=render_design,
+            kind=EventKind.DESIGN,
+            agent_stage=Stage.DESIGN,
+        )
+
+    # 진단 (QA팀, 읽기 전용)
+
+    async def _diagnose(self, task_id: int, stage: StageDecl, revision: str) -> Outcome:
+        task = await self._repo.get_task(task_id)
+        pipeline = self._pipe(task)
+        implement = pipeline.first_of(StageKind.IMPLEMENT)
+        here = pipeline.index(stage.id)
+        needs_change = implement is not None and pipeline.index(implement.id) > here
+        context, features = self._context(task)
+        tests = await self._latest_tests(task_id)
+
+        async def verify(report: DiagnosisReport) -> list[str]:
+            if not needs_change:
+                return []
+            names = {FEATURE_NAMES: context[FEATURE_NAMES]} if FEATURE_NAMES in context else None
+            try:
+                change = report.change(names)
+            except ValidationError as error:
+                return [f"변경 필드가 틀렸다: {error.errors()[0]['msg']}"]
+            if change is None:
+                return [
+                    "수정 방향 승인 뒤 바로 구현하므로 "
+                    "change_type·target_feature·slug·title이 필요하다"
+                ]
+            return []
+
+        agent = stage.agent
+        await self._say(task, f"{self._name(agent)}이 진단을 시작한다.")
+        decision = await self._decision(task_id)
+        if revision:
+            decision += f"\n\nZero의 수정 요청: {revision}"
+        prompt = diagnose_prompt(
+            await self._persona(agent),
+            title=task.title,
+            decision=decision,
+            tests=render_test_report(tests) if tests else "",
+            features=features,
+            needs_change=needs_change,
+        )
+        answer = await self._ask(
+            task,
+            agent,
+            Stage.DIAGNOSE,
+            prompt,
+            model=DiagnosisReport,
+            cwd=Path(task.worktree) if task.worktree else None,
+            verify=verify,
+        )
+        if answer.result is None:
+            return await self._failed(task, "진단", answer)
+        report: DiagnosisReport = answer.result
+        text = render_diagnosis(report)
+        if task.issue_number is not None:
+            await self._github(task).comment_issue(task.issue_number, text)
+        gate = self._next_is_gate(task, stage)
+        hint = "\n\n`/approve`로 수정 방향을 승인하거나 `/revise <요청>`으로 다시 진단한다."
+        message_id = await self._post(
+            task,
+            agent,
+            text + (hint if gate else ""),
+            Moment.DESIGN_READY if gate else Moment.STAGE_DONE,
+        )
+        payload = {"report": report.model_dump(mode="json"), "revision": revision}
+        return StageSucceeded(), NewEvent(agent, EventKind.DIAGNOSIS, payload, message_id)
+
+    # 구현과 수정 (개발팀)
+
+    async def _implement(self, task_id: int, stage: StageDecl, revision: str) -> Outcome:
+        task = await self._ensure_issue(await self._repo.get_task(task_id))
+        task, worktree = await self._ensure_worktree(task)
+        if task.branch is None:
+            # 문서 단계가 없는 흐름(버그 수정): 승인된 진단의 slug로 브랜치를 만든다 (4.3)
+            change = await self._change(task_id)
+            if change is None:
+                raise RuntimeError("브랜치 이름을 정할 승인된 변경 유형이 없다")
+            branch = change.branch_name(task.issue_number)
+            await self._git.create_branch(worktree, branch)
+            task = await self._repo.update_fields(task.id, {"branch": branch})
+        agent = stage.agent
         prompt = implement_prompt(
             await self._persona(agent),
             title=task.title,
             decision=await self._decision(task_id),
             issue=task.issue_number,
             branch=task.branch,
-            summary=summary,
+            spec=await self._spec_text(task_id),
         )
         await self._say(task, f"{self._name(agent)}이 구현을 시작한다.", Moment.IMPLEMENT_STARTED)
-        return await self._work(task, Stage.IMPLEMENT, prompt, EventKind.IMPL, {}, "구현")
+        return await self._work(task, agent, Stage.IMPLEMENT, prompt, EventKind.IMPL, {}, "구현")
 
     async def _fix(self, task_id: int, source: FixSource) -> Outcome:
         task = await self._repo.get_task(task_id)
-        summary = await self._summary(task_id)
+        agent = self._pipe(task).implementer
         if source is FixSource.RESUME:
             last = await self._latest(task_id, EventKind.FIX)
             source = FixSource(last["source"]) if last else FixSource.TESTS
             if source is FixSource.RESUME:  # pragma: no cover - 기록에는 RESUME이 남지 않는다
                 source = FixSource.TESTS
-        problems = await self._fix_problems(task_id, source)
+        problems = await self._fix_problems(task, source)
         prompt = fix_prompt(
-            await self._persona(self._org.roles.implement),
+            await self._persona(agent),
             title=task.title,
             issue=task.issue_number,
             branch=task.branch,
-            summary=summary,
+            spec_docs=await self._spec_docs(task_id),
             problems=problems,
         )
         labels = {
@@ -332,17 +631,18 @@ class WorkStages:
             FixSource.REVIEW: "리뷰 [필수] 지적",
             FixSource.RECOMMENDED: "[권장] 지적",
         }
-        name = self._name(self._org.roles.implement)
-        await self._say(task, f"{name}이 고친다: {labels[source]}", Moment.IMPLEMENT_STARTED)
+        await self._say(
+            task, f"{self._name(agent)}이 고친다: {labels[source]}", Moment.IMPLEMENT_STARTED
+        )
         payload = {"source": source.value}
-        return await self._work(task, Stage.FIX, prompt, EventKind.FIX, payload, "수정")
+        return await self._work(task, agent, Stage.FIX, prompt, EventKind.FIX, payload, "수정")
 
-    async def _fix_problems(self, task_id: int, source: FixSource) -> str:
+    async def _fix_problems(self, task: TaskRecord, source: FixSource) -> str:
         if source is FixSource.TESTS:
-            tests = await self._latest_tests(task_id)
+            tests = await self._latest_tests(task.id)
             body = render_test_report(tests) if tests else "테스트 결과가 없다"
             return f"봇이 실행한 테스트가 실패했다.\n\n{body}"
-        reviews = await self._reviews(task_id)
+        reviews = await self._reviews(task.id)
         if not reviews:
             raise RuntimeError("리뷰 결과가 없다")
         review = reviews[-1].review
@@ -350,9 +650,10 @@ class WorkStages:
             return "Zero가 merge 전에 [권장] 지적 반영을 요청했다.\n\n" + render_findings(
                 review.recommended_findings
             )
+        reviewer = self._pipe(task).first_of(StageKind.REVIEW)
+        name = self._name(reviewer.agent) if reviewer else "리뷰 담당"
         required = render_findings(review.required_findings)
-        reviewer = self._name(self._org.roles.review)
-        text = f"{reviewer}의 [필수] 지적 (번호마다 대응한다):\n\n{required}"
+        text = f"{name}의 [필수] 지적 (번호마다 대응한다):\n\n{required}"
         if review.recommended_findings:
             text += (
                 "\n\n참고: [권장] 지적 (반영 여부는 판단에 맡긴다. 번호 대응 대상 아님)\n\n"
@@ -363,6 +664,7 @@ class WorkStages:
     async def _work(
         self,
         task: TaskRecord,
+        agent: str,
         stage: Stage,
         prompt: str,
         kind: EventKind,
@@ -376,7 +678,6 @@ class WorkStages:
         async def verify(_report: ImplementationReport) -> list[str]:
             return await self._commit_problems(task, worktree, before)
 
-        agent = self._org.roles.implement
         answer = await self._ask(
             task,
             agent,
@@ -395,11 +696,8 @@ class WorkStages:
             task = await self._repo.update_fields(task.id, {"claude_session": answer.session_id})
         await self._git.push(worktree, task.branch, recorded=task.branch)
         commits = await self._git.commits(worktree, base)
-        message_id = await self._chat.post(
-            task.discord_thread,
-            agent,
-            render_implementation(report, heading=label),
-            mention=should_mention(Moment.IMPLEMENT_STARTED),
+        message_id = await self._post(
+            task, agent, render_implementation(report, heading=label), Moment.IMPLEMENT_STARTED
         )
         data = {
             **payload,
@@ -410,24 +708,24 @@ class WorkStages:
 
     # 테스트 (운영 규약 1.7)
 
-    async def _run_tests(self, task_id: int) -> Outcome | None:
+    async def _run_tests(self, task_id: int, stage_id: str) -> Outcome | None:
         task = await self._repo.get_task(task_id)
         project = self._project(task)
         if not project.test_command:
             raise RuntimeError(f"{task.project}의 test 명령이 없다")
-        run_id = (
-            f"t{task.id}-test-{len(await self._repo.list_events(task.id, {EventKind.TEST})) + 1}"
-        )
+        task, worktree = await self._ensure_worktree(task)
+        count = len(await self._repo.list_events(task.id, {EventKind.TEST}))
+        run_id = f"t{task.id}-test-{count + 1}"
         await self._say(task, "봇이 테스트를 실행한다.", Moment.TEST_RUNNING)
         self._running.tests[task.id] = run_id
         try:
-            report = await self._tests.run(run_id, project.test_command, cwd=self._worktree(task))
+            report = await self._tests.run(run_id, project.test_command, cwd=worktree)
         finally:
             self._running.tests.pop(task.id, None)
         if report.status.value == "cancelled":
             return None  # /stop
         message_id = await self._say(task, render_test_report(report), Moment.TEST_RESULT)
-        record = NewEvent(Actor.BOT, EventKind.TEST, report.to_payload(), message_id)
+        record = NewEvent(Actor.BOT, EventKind.TEST, report.to_payload(), message_id or None)
         detail = report.errors[0] if report.errors else ""
         return TestsFinished(report.passed, report.environment_error, detail), record
 
@@ -436,7 +734,7 @@ class WorkStages:
     async def _pr_body(self, task: TaskRecord) -> str:
         return render_pr_body(
             decision=await self._decision(task.id),
-            summary=await self._summary(task.id),
+            specs=await self._specs(task.id),
             report=await self._latest_report(task.id),
             tests=await self._latest_tests(task.id),
             reviews=await self._reviews(task.id),
@@ -445,30 +743,30 @@ class WorkStages:
             issue=task.issue_number,
         )
 
-    async def _publish_pr(self, task_id: int) -> Outcome | None:
+    async def _publish_pr(self, task_id: int) -> None:
         task = await self._repo.get_task(task_id)
         github = self._github(task)
         body = await self._pr_body(task)
         if task.pr_number is not None:
             await github.edit_pr_body(task.pr_number, body)
-            return None
-        summary = await self._summary(task_id)
+            return
+        change = await self._change(task_id)
+        if change is None:
+            raise RuntimeError("PR 제목을 정할 변경 유형이 없다")
         number = await github.create_pr(
             base=self._project(task).base_branch,
             head=task.branch,
-            title=summary.conventional_title,
+            title=change.conventional_title,
             body=body,
         )
         task = await self._repo.update_fields(task.id, {"pr_number": number})
-        await github.add_labels(number, ["zerosync", TYPE_LABELS[summary.change_type]])
+        await github.add_labels(number, ["zerosync", TYPE_LABELS[change.change_type]])
         await self._say(task, f"draft PR #{number}을 열었다: {self._web(task, f'pull/{number}')}")
-        return None
 
-    # 리뷰 (운영 규약 2.3)
+    # 리뷰 (QA팀, 운영 규약 2.3)
 
-    async def _review(self, task_id: int) -> Outcome:
+    async def _review(self, task_id: int, stage: StageDecl, revision: str) -> Outcome:
         task = await self._repo.get_task(task_id)
-        summary = await self._summary(task_id)
         reviews = await self._reviews(task_id)
         round_ = len(reviews) + 1
         diff = await self._git.diff(self._worktree(task), self._project(task).base_branch)
@@ -478,15 +776,15 @@ class WorkStages:
         previous = ""
         if reviews and reviews[-1].review.required_findings:
             previous = render_findings(reviews[-1].review.required_findings)
-        agent = self._org.roles.review
+        agent = stage.agent
         prompt = review_prompt(
             await self._persona(agent),
-            author=self._name(self._org.roles.implement),
+            author=self._name(self._pipe(task).implementer),
             title=task.title,
             decision=await self._decision(task_id),
             issue=task.issue_number,
             round_=round_,
-            summary=summary,
+            spec=await self._spec_text(task_id),
             tests=render_test_report(tests) if tests else "테스트 결과 없음",
             diff=diff,
             previous_required=previous,
@@ -500,12 +798,7 @@ class WorkStages:
             return await self._failed(task, "리뷰", answer)
         review: Review = answer.result
         text = render_review(review, round_=round_)
-        message_id = await self._chat.post(
-            task.discord_thread,
-            agent,
-            text,
-            mention=should_mention(Moment.REVIEW_ROUND_RESULT),
-        )
+        message_id = await self._post(task, agent, text, Moment.REVIEW_ROUND_RESULT)
         if task.pr_number is not None:
             await self._github(task).comment_pr(task.pr_number, f"### {name}\n\n{text}")
         payload = {"review": review.model_dump(mode="json"), "round": round_}
@@ -519,15 +812,174 @@ class WorkStages:
         reviews = await self._reviews(task.id)
         remaining = len(reviews[-1].review.recommended_findings) if reviews else 0
         hint = " merge 전에 `/fix`로 1회 반영할 수 있다." if remaining else ""
+        reviewer = self._pipe(task).first_of(StageKind.REVIEW)
+        who = self._name(reviewer.agent) if reviewer else "리뷰 담당"
         await self._say(
             task,
-            f"{self._name(self._org.roles.review)}이 APPROVED를 냈다. "
-            f"PR #{task.pr_number}을 확인하고 merge한다: "
+            f"{who}이 APPROVED를 냈다. PR #{task.pr_number}을 확인하고 merge한다: "
             f"{self._web(task, f'pull/{task.pr_number}')}\n남은 [권장] {remaining}개.{hint}",
             Moment.FINAL_APPROVAL,
         )
 
-    # NEEDS_HUMAN, merge, 중지
+    # 출시 준비 (배포 겸임)
+
+    async def _release_prep(self, task_id: int, stage: StageDecl, revision: str) -> Outcome:
+        task = await self._repo.get_task(task_id)
+        found = _VERSION.search(task.title)
+        version = found.group(0) if found else "0.0.0"
+        tests = await self._latest_tests(task_id)
+        agent = stage.agent
+        await self._say(task, f"{self._name(agent)}이 출시 준비물을 만든다.")
+        decision = await self._decision(task_id)
+        if revision:
+            decision += f"\n\nZero의 수정 요청: {revision}"
+        prompt = release_prep_prompt(
+            await self._persona(agent),
+            title=task.title,
+            version=version,
+            decision=decision,
+            tests=render_test_report(tests) if tests else "",
+        )
+        answer = await self._ask(
+            task,
+            agent,
+            Stage.RELEASE_PREP,
+            prompt,
+            model=ReleasePrep,
+            cwd=Path(task.worktree) if task.worktree else None,
+        )
+        if answer.result is None:
+            return await self._failed(task, "출시 준비", answer)
+        prep: ReleasePrep = answer.result
+        rendered = split_attachment(render_release_prep(prep), "release.md")
+        message_id = await self._post(
+            task,
+            agent,
+            rendered.text + "\n\n`/approve`로 출시를 승인한다. 스토어 제출은 Zero가 직접 한다. "
+            "`/revise <요청>`으로 고친다.",
+            Moment.DESIGN_READY,
+            rendered.attachments,
+        )
+        payload = {"prep": prep.model_dump(mode="json"), "revision": revision}
+        return StageSucceeded(), NewEvent(agent, EventKind.RELEASE, payload, message_id)
+
+    # 문서 반영 (운영 규약 3.9)
+
+    def _vault_paths(self, task: TaskRecord, change: ChangeSummary) -> tuple[Path, set[str]]:
+        """볼트 프로젝트 폴더와 이 작업이 쓸 수 있는 상대 경로 (기능 정의서, 허브)."""
+        project = self._project(task)
+        if project.feature_dir is None:
+            raise RuntimeError(f"{task.project}의 볼트 기능 폴더가 없다")
+        root = project.feature_dir.parent
+        allowed = {f"기능/{change.target_feature}.md"}
+        if project.vault_hub:
+            allowed.add(project.vault_hub)
+        return root, allowed
+
+    async def _doc_sync(self, task_id: int, stage: StageDecl, revision: str) -> Outcome:
+        task = await self._repo.get_task(task_id)
+        change = await self._change(task_id)
+        if change is None:
+            raise RuntimeError("문서 반영 대상 기능을 정할 변경 유형이 없다")
+        root, allowed = self._vault_paths(task, change)
+        docs = []
+        for rel in sorted(allowed):
+            path = root / rel
+            content = path.read_text(encoding="utf-8") if path.is_file() else "(아직 없다)"
+            docs.append(f"### {rel}\n\n{content}")
+        project = self._project(task)
+
+        async def verify(proposal: DocSyncProposal) -> list[str]:
+            problems = []
+            for file in proposal.files:
+                if file.path not in allowed:
+                    allowed_text = ", ".join(sorted(allowed))
+                    problems.append(f"{file.path}는 쓸 수 없는 경로다. 허용: {allowed_text}")
+                    continue
+                exists = (root / file.path).is_file()
+                if file.action == "update" and not exists:
+                    problems.append(f"{file.path}가 없는데 update다. create로 쓴다")
+                if file.action == "create" and exists:
+                    problems.append(f"{file.path}가 이미 있는데 create다. update로 쓴다")
+            return problems
+
+        agent = stage.agent
+        await self._say(task, f"{self._name(agent)}이 문서 반영안을 만든다.")
+        title = task.title + (f"\n\nZero의 수정 요청: {revision}" if revision else "")
+        prompt = doc_sync_prompt(
+            await self._persona(agent),
+            title=title,
+            pr=task.pr_number,
+            change=change,
+            spec=await self._spec_text(task_id),
+            docs="\n\n".join(docs),
+            hub=project.vault_hub or "(허브 없음)",
+            today=self._clock.now().astimezone().strftime("%Y-%m-%d"),
+        )
+        answer = await self._ask(
+            task, agent, Stage.DOC_SYNC, prompt, model=DocSyncProposal, verify=verify
+        )
+        if answer.result is None:
+            return await self._failed(task, "문서 반영", answer)
+        proposal: DocSyncProposal = answer.result
+        attachments = tuple(Attachment(Path(f.path).name, f.content) for f in proposal.files)
+        message_id = await self._post(
+            task,
+            agent,
+            render_doc_sync(proposal)
+            + "\n\n`/approve`로 볼트에 쓰고, `/revise <요청>`으로 고치고, `/skip`으로 건너뛴다.",
+            Moment.DOC_SYNC_READY,
+            attachments,
+        )
+        payload = {"proposal": proposal.model_dump(mode="json"), "revision": revision}
+        return StageSucceeded(), NewEvent(agent, EventKind.DOC_SYNC, payload, message_id)
+
+    async def _write_docs(self, task: TaskRecord) -> None:
+        """승인된 문서 반영안을 볼트 허용 경로에만 쓰고, 볼트가 git이면 그 파일만 커밋한다."""
+        payload = await self._latest(task.id, EventKind.DOC_SYNC)
+        change = await self._change(task.id)
+        if payload is None or change is None:
+            raise RuntimeError("반영할 문서 반영안이 없다")
+        proposal = DocSyncProposal.model_validate(payload["proposal"])
+        root, allowed = self._vault_paths(task, change)
+        written = []
+        for file in proposal.files:
+            if file.path not in allowed:  # 검증을 통과했어도 쓰기 직전에 다시 막는다 (3.4)
+                raise RuntimeError(f"볼트 허용 경로 밖이다: {file.path}")
+            target = root / file.path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(file.content, encoding="utf-8")
+            written.append(file.path)
+        if self._vault is not None:
+            await self._vault.commit(
+                root,
+                written,
+                f"docs({task.project}): ZeroSync 기능 - {task.title}",
+                f"ZeroSync-Task: {task.project}-{task.issue_number or task.id}",
+            )
+        await self._say(task, f"볼트에 반영했다: {', '.join(written)}")
+
+    # 정기 테스트 보고
+
+    async def _report(self, task_id: int, stage: StageDecl, revision: str) -> Outcome:
+        """정기 테스트가 실패했을 때만 포럼에 보고 포스트를 연다. 통과면 조용히 끝낸다."""
+        task = await self._repo.get_task(task_id)
+        if "test_failed" not in task.flag_set:
+            return StageSucceeded(), NewEvent(Actor.BOT, EventKind.REPORT, {"posted": False})
+        tests = await self._latest_tests(task_id)
+        diagnosis = await self._diagnosis(task_id)
+        body = render_test_report(tests) if tests else "테스트 결과 없음"
+        if diagnosis is not None:
+            body += "\n\n" + render_diagnosis(diagnosis)
+        body += "\n\n수정하려면 제품 채팅 채널에서 `/task bug <제목>`으로 시작한다."
+        day = self._clock.now().astimezone().strftime("%m-%d")
+        thread = await self._chat.create_post(task.project, f"{task.title} 실패 ({day})", body)
+        task = await self._repo.update_fields(task.id, {"discord_thread": thread})
+        await self._say(task, "정기 테스트가 실패했다. 확인이 필요하다.", Moment.DESIGN_READY)
+        payload = {"posted": True, "thread": thread}
+        return StageSucceeded(), NewEvent(Actor.BOT, EventKind.REPORT, payload)
+
+    # NEEDS_HUMAN, merge, 끝, 중지
 
     async def _label_needs_human(self, task: TaskRecord, *, add: bool) -> None:
         github = self._project(task).github
@@ -547,7 +999,7 @@ class WorkStages:
         await self._side_effect(task_id, lambda t: self._label_needs_human(t, add=True))
 
     async def _finish_merged(self, task: TaskRecord) -> None:
-        """merge 감지 (4.6). 문서 반영(DOC_SYNC)은 Phase 3이라 여기서 끝낸다."""
+        """merge 감지 (4.6): Issue를 닫는다. 문서 반영은 파이프라인 다음 단계가 한다."""
         github = self._github(task)
         if task.issue_number is not None:
             await github.close_issue(
@@ -555,12 +1007,17 @@ class WorkStages:
                 not_planned=False,
                 comment=f"develop merge 완료 (PR #{task.pr_number}). ZeroSync가 Issue를 닫는다.",
             )
-        await self._remove_worktree(task)
         await self._say(
-            task,
-            f"PR #{task.pr_number} merge를 확인하고 Issue #{task.issue_number}을 닫았다. "
-            "작업을 마친다. (문서 반영은 Phase 3에서 한다)",
+            task, f"PR #{task.pr_number} merge를 확인하고 Issue #{task.issue_number}을 닫았다."
         )
+
+    async def _finish_task(self, task: TaskRecord) -> None:
+        """파이프라인 끝: worktree 정리와 완료 안내."""
+        await self._remove_worktree(task)
+        if self._pipe(task).first_of(StageKind.RELEASE_PREP) is not None:
+            await self._say(task, "출시를 승인했다. 스토어 제출은 Zero가 직접 한다. 작업을 마친다.")
+        elif self._postable(task):
+            await self._say(task, "작업을 마친다.")
 
     async def _cleanup_stopped(self, task: TaskRecord) -> None:
         """/stop (1.8, 3.3).
