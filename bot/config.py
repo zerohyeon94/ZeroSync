@@ -27,6 +27,7 @@ from pydantic import (
 
 from bot.agents.base import Stage
 from bot.org import Org, OrgError, load_org
+from bot.pipeline import Pipeline, PipelineError, load_pipelines
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 DEFAULT_PROJECTS_PATH = PACKAGE_DIR / "projects.yaml"
@@ -196,6 +197,7 @@ class Config(_Model):
     limits: LimitsConfig
     secrets: Secrets
     org: Org
+    pipelines: dict[str, Pipeline]
 
     def project_for_forum(self, channel_id: str) -> str | None:
         """포럼 채널 ID로 프로젝트 키를 찾는다. 등록되지 않은 채널이면 None."""
@@ -268,7 +270,8 @@ def load_config(
         raise ConfigError(_describe(error)) from None
     try:
         org = load_org(projects.paths.company)
-    except OrgError as error:
+        pipelines = load_pipelines(projects.paths.company, org)
+    except (OrgError, PipelineError) as error:
         raise ConfigError(str(error)) from None
     return Config(
         projects=projects.projects,
@@ -277,6 +280,7 @@ def load_config(
         limits=projects.limits,
         secrets=secrets,
         org=org,
+        pipelines=pipelines,
     )
 
 

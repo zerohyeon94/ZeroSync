@@ -308,9 +308,37 @@ def test_org_is_loaded_from_company_dir(tmp_path):
         " doc_sync: alpha}\n",
         encoding="utf-8",
     )
+    (company / "pipelines").mkdir()
+    (company / "pipelines" / "fix.yaml").write_text(
+        "name: 수정\ncommand: /task bug\ntriggers: [discord_task]\nstages:\n"
+        "  - {id: d, kind: diagnose, agent: delta}\n  - {id: a, kind: gate}\n"
+        "  - {id: i, kind: implement, agent: alpha}\n  - {id: t, kind: test}\n"
+        "  - {id: r, kind: review, agent: delta}\n  - {id: m, kind: merge_gate}\n"
+        "budget: {max_calls: 9, max_minutes: 60}\n",
+        encoding="utf-8",
+    )
     text = yaml_text().replace("/nonexistent/zerosync-company", str(company))
     config = load(tmp_path, text)
     assert config.org.agent_names == ("alpha", "delta")
+    assert list(config.pipelines) == ["fix"]
+
+
+def test_default_pipelines_need_default_agents(tmp_path):
+    # org.yaml을 바꾸고 파이프라인을 두지 않으면 기본 파이프라인의 담당이 없어 막는다
+    company = tmp_path / "company"
+    company.mkdir()
+    (company / "org.yaml").write_text(
+        "teams:\n  dev: {name: 개발, lead: alpha}\n  qa: {name: QA, lead: delta}\n"
+        "agents:\n"
+        "  alpha: {display: Alpha, team: dev, perspective: p, basic_question: q}\n"
+        "  delta: {display: Delta, team: qa, perspective: p, basic_question: q}\n"
+        "roles: {opinions: [alpha], design: alpha, implement: alpha, review: delta,"
+        " doc_sync: alpha}\n",
+        encoding="utf-8",
+    )
+    text = yaml_text().replace("/nonexistent/zerosync-company", str(company))
+    with pytest.raises(ConfigError, match="R4"):
+        load(tmp_path, text)
 
 
 def test_broken_org_is_a_config_error(tmp_path):
