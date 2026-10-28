@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import quote, urlencode
 
 from bot.dashboard.queries import (
+    AgentActivity,
     EventRow,
     IdeaRow,
     Overview,
@@ -18,7 +19,8 @@ from bot.dashboard.queries import (
     StageStat,
     TaskRow,
 )
-from bot.org import DEFAULT_ORG
+from bot.org import DEFAULT_ORG, Org
+from bot.pipeline import Pipeline
 from bot.render import render_opinion
 from bot.schemas import Opinion
 
@@ -97,6 +99,15 @@ td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
 .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px 16px;
   min-width:220px; }
 .card .big { font-size:24px; font-weight:600; }
+.member { background:var(--card); border:1px solid var(--line); border-radius:8px;
+  padding:14px 18px; margin:0 0 14px; }
+.member h3 { margin:0 0 4px; font-size:16px; }
+.member dl { display:grid; grid-template-columns:max-content 1fr; gap:4px 14px; margin:10px 0; }
+.member dt { color:var(--muted); } .member dd { margin:0; }
+.badge { display:inline-block; border-radius:10px; padding:1px 8px; font-size:12px;
+  border:1px solid var(--line); margin-left:6px; }
+.badge.working { color:var(--ok); border-color:var(--ok); }
+details pre { white-space:pre-wrap; }
 form.filters { display:flex; gap:8px; align-items:center; margin-bottom:12px; }
 select, button { font:inherit; padding:3px 6px; }
 .event { background:var(--card); border:1px solid var(--line); border-radius:8px;
@@ -149,6 +160,7 @@ def page(title: str, body: str, *, active: str = "") -> str:
         for key, href, label in (
             ("summary", "/", "요약"),
             ("tasks", "/tasks", "작업"),
+            ("team", "/team", "직원"),
             ("runs", "/runs", "실행 기록"),
             ("ideas", "/ideas", "아이디어"),
         )
@@ -554,6 +566,107 @@ def _runs_table(runs: Sequence[RunRow], *, with_task: bool = True) -> str:
         rows.append(row)
     numeric = {6, 7} if with_task else {4, 5}
     return _table(headers, rows, numeric=numeric)
+
+
+def _elapsed(since: str, now: datetime) -> str:
+    minutes = (now - datetime.fromisoformat(since)).total_seconds() / 60
+    return f"{minutes:.0f}분" if minutes < 60 else _age(since, now)
+
+
+def assignments(pipelines: Mapping[str, Pipeline]) -> dict[str, list[str]]:
+    """에이전트별로 맡은 흐름 단계. 팀장 확인은 `(확인)`을 붙인다."""
+    jobs: dict[str, list[str]] = {}
+    for pipeline in pipelines.values():
+        for stage in pipeline.stages:
+            label = STAGE_LABELS.get(stage.kind.value, stage.kind.value)
+            if stage.agent:
+                jobs.setdefault(stage.agent, []).append(f"{pipeline.name} · {label}")
+            if stage.check:
+                jobs.setdefault(stage.check, []).append(f"{pipeline.name} · {label} (확인)")
+    return jobs
+
+
+def _member(
+    org: Org,
+    agent: str,
+    activity: AgentActivity | None,
+    jobs: Sequence[str],
+    daily_calls: Mapping[str, int],
+    now: datetime,
+) -> str:
+    spec = org.agents[agent]
+    running = activity.running if activity else []
+    if running:
+        run = running[0]
+        badge = '<span class="badge working">일하는 중</span>'
+        doing = (
+            f"{_task_link(run.task_id, run.title)} · "
+            f"{_e(STAGE_LABELS.get(run.stage, run.stage))} · {_elapsed(run.started_at, now)}째"
+        )
+    else:
+        badge = '<span class="badge">쉬는 중</span>'
+        last = activity.recent[0] if activity and activity.recent else None
+        doing = (
+            f'<span class="muted">마지막 일 {local_time(last.started_at)} · '
+            f"{_e(STAGE_LABELS.get(last.stage, last.stage))}</span>"
+            if last
+            else '<span class="muted">아직 한 일이 없다</span>'
+        )
+    limit = daily_calls.get(agent)
+    today = activity.today if activity else 0
+    models = ", ".join(
+        f"{STAGE_LABELS.get(stage.value, stage.value)} {model}"
+        for stage, model in spec.models.items()
+    )
+    facts = [
+        ("지금", doing),
+        ("오늘 실행", f"{today} / {limit}" if limit else str(today)),
+        ("최근 7일", _counts(activity.week if activity else {}, STATUS_LABELS)),
+        ("맡은 일", _e(", ".join(jobs)) or '<span class="muted">흐름에 배정 없음</span>'),
+        ("관점", _e(spec.perspective)),
+        ("기본 질문", _e(spec.basic_question)),
+        ("엔진·모델", _e(spec.engine + (f" ({models})" if models else ""))),
+        ("채용", _e(" · ".join(x for x in (spec.hired, spec.reason) if x)) or "-"),
+    ]
+    rows = "".join(f"<dt>{_e(k)}</dt><dd>{v}</dd>" for k, v in facts)
+    profile = org.profile(agent)
+    persona = (
+        f"<details><summary>인격·역량 (agents/{_e(agent)}.md)</summary>"
+        f"<pre>{_e(profile)}</pre></details>"
+        if profile
+        else '<p class="muted">인격 파일 없음 (기본 조직)</p>'
+    )
+    recent = _runs_table(activity.recent, with_task=True) if activity and activity.recent else ""
+    mbti = f" ({_e(spec.mbti)})" if spec.mbti else ""
+    return (
+        f'<section class="member" id="{_e(agent)}"><h3>{_name(agent)}{mbti}{badge}</h3>'
+        f"<dl>{rows}</dl>{persona}{recent}</section>"
+    )
+
+
+def team_page(
+    org: Org,
+    activity: Mapping[str, AgentActivity],
+    jobs: Mapping[str, Sequence[str]],
+    *,
+    daily_calls: Mapping[str, int],
+    now: datetime,
+) -> str:
+    """직원 화면: 팀별로 팀장 먼저, 지금 하는 일, 오늘·7일 기록, 맡은 일, 인격 (ADR-008)."""
+    working = sum(1 for a in activity.values() if a.running)
+    parts = [
+        "<h1>직원</h1>",
+        f'<p class="muted">{len(org.agents)}명 중 {working}명이 일하는 중. '
+        "에이전트는 한 번에 한 명씩 일한다 (ADR-007)</p>",
+    ]
+    for team in org.teams.values():
+        members = [a for a, s in org.agents.items() if org.teams[s.team] is team]
+        members.sort(key=lambda a: a != team.lead)
+        parts.append(f"<h2>{_e(team.name)}팀</h2>")
+        parts += [
+            _member(org, a, activity.get(a), jobs.get(a, []), daily_calls, now) for a in members
+        ]
+    return page("직원", "".join(parts), active="team")
 
 
 def runs_page(

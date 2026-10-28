@@ -14,6 +14,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from bot.dashboard import queries, views
+from bot.org import DEFAULT_ORG, Org
+from bot.pipeline import Pipeline
 from bot.workflow.state import TaskState
 
 HOST = "127.0.0.1"
@@ -27,6 +29,8 @@ class DashboardSettings:
     runs_dir: Path
     guild_id: str | None = None  # 있으면 작업에 Discord 게시글 링크를 단다
     daily_calls: Mapping[str, int] = field(default_factory=dict)  # 에이전트별 하루 한도
+    org: Org = DEFAULT_ORG  # 직원 화면 (인격 파일 포함)
+    pipelines: Mapping[str, Pipeline] = field(default_factory=dict)  # 직원별 맡은 일
     now: Callable[[], datetime] = lambda: datetime.now(UTC)
 
     def discord_url(self, thread: str) -> str | None:
@@ -63,6 +67,24 @@ def _route(
     parts: list[str],
     params: dict[str, str],
 ) -> Response:
+    if parts == ["team"]:
+        now = settings.now()
+        today = now.astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+        activity = queries.agent_activity(
+            conn,
+            settings.org.agent_names,
+            today_start=today.astimezone(UTC).isoformat(),
+            week_start=(today - timedelta(days=7)).astimezone(UTC).isoformat(),
+        )
+        return _ok(
+            views.team_page(
+                settings.org,
+                activity,
+                views.assignments(settings.pipelines),
+                daily_calls=settings.daily_calls,
+                now=now,
+            )
+        )
     if not parts:
         now = settings.now()
         today = now.astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
