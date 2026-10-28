@@ -1,10 +1,13 @@
+"""상태 전이 테스트 (SPEC 3, 3.5). 파이프라인 선언대로 진행하는 순수 함수를 고정한다."""
+
 from dataclasses import dataclass
 
 import pytest
 
+from bot.org import DEFAULT_ORG
+from bot.pipeline import StageKind, default_pipelines, legacy_pipeline
 from bot.workflow.state import (
     ALLOWED_COMMANDS,
-    OPINION_NOTICE_AFTER,
     ApplyTypeLabel,
     CancelAgentRuns,
     CleanupStopped,
@@ -13,261 +16,131 @@ from bot.workflow.state import (
     CommandName,
     CreateIssue,
     FinishMerged,
+    FinishTask,
     FixSource,
     Limits,
     MarkNeedsHuman,
     MarkReady,
     NoticeCode,
-    PostCreated,
     PostNotice,
     PrMerged,
     PublishPr,
-    RequestDebate,
-    RequestOpinions,
     ReviewFinished,
     RunTests,
     StageFailed,
     StageSucceeded,
-    StartDesign,
     StartFix,
-    StartImplement,
-    StartReview,
+    StartStage,
     TaskState,
     TestsFinished,
-    WriteVaultDecision,
+    WriteDocs,
     ZeroMessage,
+    stage_index,
     start_task,
     transition,
 )
 
+PIPELINES = default_pipelines()
+FEATURE = PIPELINES["feature"]
+BUGFIX = PIPELINES["bugfix"]
+RELEASE = PIPELINES["release"]
+NIGHTLY = PIPELINES["nightly-test"]
 
-@dataclass
+
+@dataclass(frozen=True)
 class Task:
-    state: TaskState = TaskState.OPINIONS
-    opinion_rounds: int = 0
+    state: TaskState
     prev_state: TaskState | None = None
     review_round: int = 0
     test_retry: int = 0
     review_limit_bonus: int = 0
     test_limit_bonus: int = 0
     recommended_fixed: int = 0
+    flags: str = ""
+
+    @property
+    def flag_set(self) -> frozenset[str]:
+        return frozenset(f for f in self.flags.split(",") if f)
 
 
-def notices(result, code):
-    return [e for e in result.effects if isinstance(e, PostNotice) and e.code is code]
+def step(state, event, pipeline=FEATURE, **fields):
+    return transition(Task(state=state, **fields), event, Limits(), pipeline)
 
 
-# 상태 분류
+APPROVE = Command(CommandName.APPROVE)
 
 
-def test_terminal_and_waiting_states():
-    assert {s for s in TaskState if s.is_terminal} == {TaskState.DONE, TaskState.STOPPED}
-    assert {s for s in TaskState if s.waits_for_zero} == {
-        TaskState.OPINIONS,
-        TaskState.AWAIT_DESIGN_APPROVAL,
-        TaskState.AWAIT_MERGE,
-        TaskState.AWAIT_DOC_APPROVAL,
-        TaskState.NEEDS_HUMAN,
-    }
+# 시작
 
 
-def test_allowed_commands_follow_spec_table():
-    assert ALLOWED_COMMANDS[TaskState.OPINIONS] == {
-        CommandName.DEBATE,
-        CommandName.DECIDE,
-        CommandName.STOP,
-    }
-    assert ALLOWED_COMMANDS[TaskState.AWAIT_DOC_APPROVAL] == {
-        CommandName.APPROVE,
-        CommandName.REVISE,
-        CommandName.SKIP,
-        CommandName.STOP,
-    }
-    assert ALLOWED_COMMANDS[TaskState.IMPLEMENTING] == {CommandName.STOP}
-    assert ALLOWED_COMMANDS[TaskState.DONE] == set()
-    assert ALLOWED_COMMANDS[TaskState.STOPPED] == set()
+def test_feature_starts_with_issue_and_plan():
+    result = start_task(FEATURE)
+    assert result.state is TaskState.PLANNING
+    assert result.effects == (CreateIssue(), StartStage("plan"))
 
 
-# 작업 생성
+def test_release_and_nightly_start_with_tests_and_no_issue():
+    assert start_task(RELEASE).effects == (RunTests("check"),)
+    assert start_task(RELEASE).state is TaskState.TESTING
+    assert start_task(NIGHTLY).effects == (RunTests("test"),)
 
 
-def test_post_starts_opinions_with_independent_first_opinions():
-    result = start_task(PostCreated("예산 배너", "홈에 예산 초과 배너를 띄우자"))
-    assert result.state is TaskState.OPINIONS
-    assert result.effects == (
-        RequestOpinions(("claude", "codex"), "홈에 예산 초과 배너를 띄우자", with_history=False),
-    )
-    assert result.updates == {"opinion_rounds": 0}
+def test_bugfix_starts_with_diagnosis():
+    result = start_task(BUGFIX)
+    assert result.state is TaskState.DIAGNOSING
+    assert result.effects == (CreateIssue(), StartStage("diagnose"))
 
 
-# OPINIONS
+# 기능 개발
 
 
-def test_message_asks_both_with_history_and_counts_question():
-    result = transition(Task(opinion_rounds=2), ZeroMessage("  성능은 괜찮을까?  "))
-    assert result.state is TaskState.OPINIONS
-    assert result.effects == (
-        RequestOpinions(("claude", "codex"), "성능은 괜찮을까?", with_history=True),
-    )
-    assert result.updates == {"opinion_rounds": 3}
+def test_plan_with_ui_change_goes_through_ui_design():
+    planned = step(TaskState.PLANNING, StageSucceeded(frozenset({"has_ui_change"})))
+    assert planned.state is TaskState.AWAIT_PLAN_APPROVAL
+    assert planned.updates == {"flags": "has_ui_change"}
+
+    approved = step(TaskState.AWAIT_PLAN_APPROVAL, APPROVE, flags="has_ui_change")
+    assert approved.state is TaskState.UI_DESIGNING
+    assert approved.effects == (ApplyTypeLabel(), StartStage("ui"))
+
+    designed = step(TaskState.UI_DESIGNING, StageSucceeded(), flags="has_ui_change")
+    assert designed.state is TaskState.AWAIT_UI_APPROVAL
+    ui_ok = step(TaskState.AWAIT_UI_APPROVAL, APPROVE, flags="has_ui_change")
+    assert ui_ok.state is TaskState.DESIGNING
+    assert ui_ok.effects == (StartStage("design"),)  # 화면 승인은 type 라벨을 다시 달지 않는다
 
 
-@pytest.mark.parametrize(
-    ("text", "agent", "question"),
-    [
-        ("@claude 설계 관점은?", "claude", "설계 관점은?"),
-        ("@codex 반례는?", "codex", "반례는?"),
-        ("  @Codex\n반례는?", "codex", "반례는?"),
-        ("@claude", "claude", ""),
-    ],
-)
-def test_mention_asks_only_that_agent(text, agent, question):
-    result = transition(Task(), ZeroMessage(text))
-    assert result.effects == (RequestOpinions((agent,), question, with_history=True),)
-    assert result.updates == {"opinion_rounds": 1}
+def test_plan_without_ui_change_skips_ui_design_and_its_gate():
+    approved = step(TaskState.AWAIT_PLAN_APPROVAL, APPROVE)
+    assert approved.state is TaskState.DESIGNING
+    assert approved.effects == (ApplyTypeLabel(), StartStage("design"))
 
 
-@pytest.mark.parametrize("text", ["@claudette 안녕", "질문 @claude", "@ codex 뭐"])
-def test_text_that_is_not_a_leading_mention_goes_to_both(text):
-    result = transition(Task(), ZeroMessage(text))
-    assert result.effects[0].agents == ("claude", "codex")
+def test_design_flows_into_implementation_without_gate():
+    result = step(TaskState.DESIGNING, StageSucceeded())
+    assert result.state is TaskState.IMPLEMENTING
+    assert result.effects == (StartStage("implement"),)
+    tested = step(TaskState.IMPLEMENTING, StageSucceeded())
+    assert (tested.state, tested.effects) == (TaskState.TESTING, (RunTests("test"),))
 
 
-def test_awaiting_decision_notice_once_when_questions_exceed_five():
-    before = transition(Task(opinion_rounds=OPINION_NOTICE_AFTER - 1), ZeroMessage("질문"))
-    crossing = transition(Task(opinion_rounds=OPINION_NOTICE_AFTER), ZeroMessage("질문"))
-    after = transition(Task(opinion_rounds=OPINION_NOTICE_AFTER + 1), ZeroMessage("질문"))
-    assert notices(before, NoticeCode.AWAITING_DECISION) == []
-    assert len(notices(crossing, NoticeCode.AWAITING_DECISION)) == 1
-    assert crossing.updates == {"opinion_rounds": OPINION_NOTICE_AFTER + 1}
-    assert notices(after, NoticeCode.AWAITING_DECISION) == []
-
-
-def test_debate_requests_rebuttal_without_counting_question():
-    result = transition(Task(opinion_rounds=3), Command(CommandName.DEBATE))
-    assert result.state is TaskState.OPINIONS
-    assert result.effects == (RequestDebate(),)
-    assert result.updates == {}
-
-
-def test_decide_moves_to_designing_with_zero_original_text():
-    result = transition(Task(), Command(CommandName.DECIDE, "  배너는 초과 시에만  "))
-    assert result.state is TaskState.DESIGNING
-    assert result.effects == (
-        CreateIssue("배너는 초과 시에만"),
-        WriteVaultDecision("배너는 초과 시에만"),
-        StartDesign(),
-    )
-
-
-def test_decide_without_direction_is_rejected():
-    result = transition(Task(), Command(CommandName.DECIDE, "   "))
-    assert result.state is TaskState.OPINIONS
-    [notice] = notices(result, NoticeCode.REJECTED)
-    assert "/decide 뒤에 방향" in notice.detail
-
-
-@pytest.mark.parametrize(
-    "name", [CommandName.APPROVE, CommandName.REVISE, CommandName.SKIP, CommandName.FIX]
-)
-def test_commands_not_allowed_in_opinions_are_rejected_with_guidance(name):
-    result = transition(Task(opinion_rounds=2), Command(name))
-    assert result.state is TaskState.OPINIONS
-    assert result.updates == {}
-    [notice] = notices(result, NoticeCode.REJECTED)
-    assert "OPINIONS" in notice.detail
-    assert "/debate, /decide, /stop" in notice.detail
-
-
-# /stop
-
-
-@pytest.mark.parametrize("state", [s for s in TaskState if not s.is_terminal])
-def test_stop_from_any_active_state(state):
-    result = transition(Task(state=state), Command(CommandName.STOP))
-    assert result.state is TaskState.STOPPED
-    assert result.effects == (
-        CancelAgentRuns(),
-        CleanupStopped(),
-        PostNotice(NoticeCode.STOPPED),
-    )
-
-
-@pytest.mark.parametrize("state", [TaskState.DONE, TaskState.STOPPED])
-def test_terminal_states_reject_everything(state):
-    for event in (Command(CommandName.STOP), ZeroMessage("다시"), Command(CommandName.DECIDE, "x")):
-        result = transition(Task(state=state), event)
-        assert result.state is state
-        assert notices(result, NoticeCode.REJECTED)
-
-
-# 아직 구현하지 않은 상태
-
-
-def test_message_outside_opinions_is_rejected():
-    result = transition(Task(state=TaskState.AWAIT_MERGE), ZeroMessage("언제 끝나?"))
-    assert result.state is TaskState.AWAIT_MERGE
-    [notice] = notices(result, NoticeCode.REJECTED)
-    assert "/fix, /stop" in notice.detail
-
-
-def test_doc_sync_commands_are_phase_3():
-    with pytest.raises(NotImplementedError):
-        transition(Task(state=TaskState.AWAIT_DOC_APPROVAL), Command(CommandName.APPROVE))
-
-
-# Phase 2: 설계부터 merge까지
-
-
-def step(state, event, **fields):
-    return transition(Task(state=state, **fields), event, Limits())
-
-
-def test_design_done_waits_for_approval_and_failure_needs_human():
-    assert step(TaskState.DESIGNING, StageSucceeded()).state is TaskState.AWAIT_DESIGN_APPROVAL
-    failed = step(TaskState.DESIGNING, StageFailed("형식 오류 반복"))
-    assert failed.state is TaskState.NEEDS_HUMAN
-    assert failed.effects == (MarkNeedsHuman("형식 오류 반복"),)
-    assert failed.updates == {"prev_state": TaskState.DESIGNING}
-
-
-def test_design_approval_commands():
-    approved = step(TaskState.AWAIT_DESIGN_APPROVAL, Command(CommandName.APPROVE))
-    assert approved.state is TaskState.IMPLEMENTING
-    assert approved.effects == (ApplyTypeLabel(), StartImplement())
-
-    revised = step(TaskState.AWAIT_DESIGN_APPROVAL, Command(CommandName.REVISE, " 배너 색 "))
-    assert revised.state is TaskState.DESIGNING
-    assert revised.effects == (StartDesign("배너 색"),)
-
-    empty = step(TaskState.AWAIT_DESIGN_APPROVAL, Command(CommandName.REVISE, " "))
-    assert empty.state is TaskState.AWAIT_DESIGN_APPROVAL
-    assert "고칠 내용" in notices(empty, NoticeCode.REJECTED)[0].detail
-
-
-@pytest.mark.parametrize("state", [TaskState.IMPLEMENTING, TaskState.FIXING])
-def test_work_done_runs_tests(state):
-    assert step(state, StageSucceeded()).effects == (RunTests(),)
-    assert step(state, StageSucceeded()).state is TaskState.TESTING
-    assert step(state, StageFailed("x")).updates == {"prev_state": state}
-
-
-def test_tests_pass_opens_pr_and_review():
+def test_passing_tests_open_pr_and_start_review():
     result = step(TaskState.TESTING, TestsFinished(passed=True))
     assert result.state is TaskState.REVIEWING
-    assert result.effects == (PublishPr(), StartReview())
+    assert result.effects == (PublishPr(), StartStage("review"))
 
 
-def test_test_failures_fix_until_limit():
+def test_failing_tests_fix_until_limit():
     first = step(TaskState.TESTING, TestsFinished(passed=False))
     assert first.state is TaskState.FIXING
     assert first.effects == (StartFix(FixSource.TESTS),)
     assert first.updates == {"test_retry": 1}
-    # 2회 초과 시 NEEDS_HUMAN (Q2)
     assert step(TaskState.TESTING, TestsFinished(False), test_retry=1).state is TaskState.FIXING
     over = step(TaskState.TESTING, TestsFinished(False), test_retry=2)
     assert over.state is TaskState.NEEDS_HUMAN
     assert over.updates == {"prev_state": TaskState.TESTING, "test_retry": 3}
+    fixed = step(TaskState.FIXING, StageSucceeded())
+    assert (fixed.state, fixed.effects) == (TaskState.TESTING, (RunTests("test"),))
 
 
 def test_environment_error_goes_to_needs_human_without_fix():
@@ -278,7 +151,6 @@ def test_environment_error_goes_to_needs_human_without_fix():
     )
     assert result.state is TaskState.NEEDS_HUMAN
     assert result.effects == (MarkNeedsHuman("테스트 환경 오류: xcodebuild: error: no device"),)
-    # 재시도 횟수는 그대로라 /resume하면 테스트만 다시 돈다
     assert result.updates == {"prev_state": TaskState.TESTING}
     resumed = step(
         TaskState.NEEDS_HUMAN,
@@ -287,84 +159,220 @@ def test_environment_error_goes_to_needs_human_without_fix():
         test_retry=1,
     )
     assert resumed.state is TaskState.TESTING
-    assert resumed.effects[-1] == RunTests()
+    assert resumed.effects == (ClearNeedsHuman(), RunTests("test"))
 
 
 def test_review_rounds_until_limit():
     approved = step(TaskState.REVIEWING, ReviewFinished(approved=True))
     assert approved.state is TaskState.AWAIT_MERGE
     assert approved.effects == (MarkReady(),)
-
-    changes = step(TaskState.REVIEWING, ReviewFinished(approved=False), review_round=2)
+    changes = step(TaskState.REVIEWING, ReviewFinished(approved=False))
     assert changes.state is TaskState.FIXING
     assert changes.effects == (StartFix(FixSource.REVIEW),)
-    assert changes.updates == {"review_round": 3}
-    # 리뷰 3회 초과 시 NEEDS_HUMAN
-    over = step(TaskState.REVIEWING, ReviewFinished(approved=False), review_round=3)
+    assert changes.updates == {"review_round": 1}
+    over = step(TaskState.REVIEWING, ReviewFinished(False), review_round=3)
     assert over.state is TaskState.NEEDS_HUMAN
-    assert over.updates["review_round"] == 4
 
 
-def test_limits_include_resume_bonus():
-    result = step(TaskState.REVIEWING, ReviewFinished(False), review_round=3, review_limit_bonus=1)
-    assert result.state is TaskState.FIXING
-
-
-def test_await_merge():
+def test_merge_then_doc_sync_with_approval():
     merged = step(TaskState.AWAIT_MERGE, PrMerged())
-    assert merged.state is TaskState.DONE
-    assert merged.effects == (FinishMerged(),)
+    assert merged.state is TaskState.DOC_DRAFTING
+    assert merged.effects == (FinishMerged(), StartStage("docs"))
+    drafted = step(TaskState.DOC_DRAFTING, StageSucceeded())
+    assert drafted.state is TaskState.AWAIT_DOC_APPROVAL
+    written = step(TaskState.AWAIT_DOC_APPROVAL, APPROVE)
+    assert written.state is TaskState.DONE
+    assert written.effects == (WriteDocs(), FinishTask())
+    skipped = step(TaskState.AWAIT_DOC_APPROVAL, Command(CommandName.SKIP))
+    assert (skipped.state, skipped.effects) == (TaskState.DONE, (FinishTask(),))
+    revised = step(TaskState.AWAIT_DOC_APPROVAL, Command(CommandName.REVISE, " 확인 이력 "))
+    assert revised.effects == (StartStage("docs", "확인 이력"),)
 
+
+def test_recommended_fix_once_before_merge():
     fix = step(TaskState.AWAIT_MERGE, Command(CommandName.FIX, "권장 반영"))
     assert fix.state is TaskState.FIXING
     assert fix.effects == (StartFix(FixSource.RECOMMENDED),)
-    assert fix.updates == {"recommended_fixed": 1}
-
     again = step(TaskState.AWAIT_MERGE, Command(CommandName.FIX), recommended_fixed=1)
     assert again.state is TaskState.AWAIT_MERGE
-    assert "1회만" in notices(again, NoticeCode.REJECTED)[0].detail
+    assert isinstance(again.effects[0], PostNotice)
+
+
+def test_revise_goes_back_to_previous_stage():
+    revised = step(TaskState.AWAIT_PLAN_APPROVAL, Command(CommandName.REVISE, " 범위를 줄여 "))
+    assert revised.state is TaskState.PLANNING
+    assert revised.effects == (StartStage("plan", "범위를 줄여"),)
+    empty = step(TaskState.AWAIT_PLAN_APPROVAL, Command(CommandName.REVISE, " "))
+    assert empty.state is TaskState.AWAIT_PLAN_APPROVAL
+    assert empty.effects[0].code is NoticeCode.REJECTED
+
+
+# 버그 수정, 출시, 정기 테스트
+
+
+def test_bugfix_flow_ends_at_merge():
+    diagnosed = step(TaskState.DIAGNOSING, StageSucceeded(), BUGFIX)
+    assert diagnosed.state is TaskState.AWAIT_FIX_APPROVAL
+    approved = step(TaskState.AWAIT_FIX_APPROVAL, APPROVE, BUGFIX)
+    assert approved.state is TaskState.IMPLEMENTING
+    assert approved.effects == (ApplyTypeLabel(), StartStage("implement"))
+    merged = step(TaskState.AWAIT_MERGE, PrMerged(), BUGFIX)
+    assert merged.state is TaskState.DONE
+    assert merged.effects == (FinishMerged(), FinishTask())
+
+
+def test_release_flow():
+    passed = step(TaskState.TESTING, TestsFinished(True), RELEASE)
+    assert passed.state is TaskState.RELEASE_PREPARING
+    assert passed.effects == (StartStage("prepare"),)  # 코드를 바꾸지 않으므로 PR이 없다
+    failed = step(TaskState.TESTING, TestsFinished(False), RELEASE)
+    assert failed.state is TaskState.NEEDS_HUMAN
+    prepared = step(TaskState.RELEASE_PREPARING, StageSucceeded(), RELEASE)
+    assert prepared.state is TaskState.AWAIT_RELEASE_APPROVAL
+    done = step(TaskState.AWAIT_RELEASE_APPROVAL, APPROVE, RELEASE)
+    assert (done.state, done.effects) == (TaskState.DONE, (FinishTask(),))
+
+
+def test_nightly_test_reports_only_failures():
+    passed = step(TaskState.TESTING, TestsFinished(True), NIGHTLY)
+    assert passed.state is TaskState.REPORTING  # 진단은 건너뛰고 보고 단계가 조용히 끝낸다
+    failed = step(TaskState.TESTING, TestsFinished(False), NIGHTLY)
+    assert failed.state is TaskState.DIAGNOSING
+    assert failed.updates == {"flags": "test_failed"}
+    diagnosed = step(TaskState.DIAGNOSING, StageSucceeded(), NIGHTLY, flags="test_failed")
+    assert diagnosed.state is TaskState.REPORTING
+    reported = step(TaskState.REPORTING, StageSucceeded(), NIGHTLY, flags="test_failed")
+    assert reported.state is TaskState.DONE
+
+
+# 공통 규칙
 
 
 @pytest.mark.parametrize(
-    ("fields", "state", "effect", "updates"),
+    "state", [s for s in TaskState if not s.is_terminal and s is not TaskState.OPINIONS]
+)
+def test_stop_from_any_active_state(state):
+    result = step(state, Command(CommandName.STOP))
+    assert result.state is TaskState.STOPPED
+    assert result.effects == (CancelAgentRuns(), CleanupStopped(), PostNotice(NoticeCode.STOPPED))
+
+
+def test_stop_after_done_is_rejected():
+    result = step(TaskState.DONE, Command(CommandName.STOP))
+    assert result.state is TaskState.DONE
+
+
+def test_stage_failure_goes_to_needs_human_and_resume_restarts_stage():
+    failed = step(TaskState.PLANNING, StageFailed("형식 오류 반복"))
+    assert failed.state is TaskState.NEEDS_HUMAN
+    assert failed.effects == (MarkNeedsHuman("형식 오류 반복"),)
+    assert failed.updates == {"prev_state": TaskState.PLANNING}
+    resumed = step(
+        TaskState.NEEDS_HUMAN, Command(CommandName.RESUME), prev_state=TaskState.PLANNING
+    )
+    assert resumed.state is TaskState.PLANNING
+    assert resumed.effects == (ClearNeedsHuman(), StartStage("plan"))
+
+
+@pytest.mark.parametrize(
+    ("fields", "expected_state", "expected_effects", "updates"),
     [
         (
             {"prev_state": TaskState.TESTING, "test_retry": 3},
             TaskState.FIXING,
-            StartFix(FixSource.TESTS),
+            (ClearNeedsHuman(), StartFix(FixSource.TESTS)),
             {"test_limit_bonus": 1},
         ),
-        ({"prev_state": TaskState.TESTING, "test_retry": 1}, TaskState.TESTING, RunTests(), {}),
         (
             {"prev_state": TaskState.REVIEWING, "review_round": 4},
             TaskState.FIXING,
-            StartFix(FixSource.REVIEW),
+            (ClearNeedsHuman(), StartFix(FixSource.REVIEW)),
             {"review_limit_bonus": 1},
         ),
-        ({"prev_state": TaskState.REVIEWING}, TaskState.REVIEWING, StartReview(), {}),
-        ({"prev_state": TaskState.DESIGNING}, TaskState.DESIGNING, StartDesign(), {}),
-        ({"prev_state": TaskState.IMPLEMENTING}, TaskState.IMPLEMENTING, StartImplement(), {}),
-        ({"prev_state": TaskState.FIXING}, TaskState.FIXING, StartFix(FixSource.RESUME), {}),
+        (
+            {"prev_state": TaskState.REVIEWING, "review_round": 1},
+            TaskState.REVIEWING,
+            (ClearNeedsHuman(), StartStage("review")),
+            {},
+        ),
+        (
+            {"prev_state": TaskState.FIXING},
+            TaskState.FIXING,
+            (ClearNeedsHuman(), StartFix(FixSource.RESUME)),
+            {},
+        ),
     ],
 )
-def test_resume_from_needs_human(fields, state, effect, updates):
+def test_resume_raises_only_the_exceeded_limit(fields, expected_state, expected_effects, updates):
     result = step(TaskState.NEEDS_HUMAN, Command(CommandName.RESUME), **fields)
-    assert result.state is state
-    assert result.effects == (ClearNeedsHuman(), effect)
-    # 카운터는 그대로 두고 한도만 늘린다 (Q4)
+    assert result.state is expected_state
+    assert result.effects == expected_effects
     assert dict(result.updates) == updates
 
 
-def test_resume_without_resumable_prev_state_is_rejected():
-    result = step(TaskState.NEEDS_HUMAN, Command(CommandName.RESUME), prev_state=None)
+def test_messages_in_posts_are_only_recorded():
+    result = step(TaskState.AWAIT_PLAN_APPROVAL, ZeroMessage("범위는?"))
+    assert result == transition(
+        Task(TaskState.AWAIT_PLAN_APPROVAL), ZeroMessage("x"), None, FEATURE
+    )
+    assert result.effects == ()
+
+
+def test_late_internal_event_is_ignored():
+    assert step(TaskState.STOPPED, StageSucceeded()).state is TaskState.STOPPED
+    assert step(TaskState.AWAIT_MERGE, StageSucceeded()).effects == ()
+
+
+def test_wrong_command_is_rejected_with_allowed_list():
+    result = step(TaskState.REVIEWING, APPROVE)
+    assert result.state is TaskState.REVIEWING
+    assert "가능한 명령: /stop" in result.effects[0].detail
+
+
+def test_legacy_opinions_task_points_to_chat():
+    result = transition(Task(TaskState.OPINIONS), APPROVE, Limits(), FEATURE)
+    assert result.state is TaskState.OPINIONS
+    assert "/task" in result.effects[0].detail
+
+
+def test_gate_states_allow_approve_and_revise():
+    for state in (
+        TaskState.AWAIT_PLAN_APPROVAL,
+        TaskState.AWAIT_UI_APPROVAL,
+        TaskState.AWAIT_FIX_APPROVAL,
+        TaskState.AWAIT_RELEASE_APPROVAL,
+    ):
+        assert {CommandName.APPROVE, CommandName.REVISE} <= ALLOWED_COMMANDS[state]
+        assert state.waits_for_zero and state.is_gate
+
+
+def test_stage_index_from_state():
+    assert stage_index(FEATURE, TaskState.AWAIT_UI_APPROVAL) == 3
+    assert stage_index(FEATURE, TaskState.FIXING) == FEATURE.index("implement")
+    assert stage_index(FEATURE, TaskState.AWAIT_DOC_APPROVAL) == FEATURE.index("docs")
+    with pytest.raises(ValueError):
+        stage_index(RELEASE, TaskState.REVIEWING)
+
+
+def test_legacy_pipeline_resumes_old_tasks():
+    legacy = legacy_pipeline(DEFAULT_ORG)
+    assert legacy.first_of(StageKind.REVIEW).agent == "delta"
+    resumed = transition(
+        Task(TaskState.NEEDS_HUMAN, prev_state=TaskState.TESTING),
+        Command(CommandName.RESUME),
+        Limits(),
+        legacy,
+    )
+    assert resumed.effects == (ClearNeedsHuman(), RunTests("test"))
+    approved = transition(Task(TaskState.AWAIT_DESIGN_APPROVAL), APPROVE, Limits(), legacy)
+    assert approved.effects == (ApplyTypeLabel(), StartStage("implement"))
+
+
+def test_test_retries_from_pipeline_override_limits():
+    stages = tuple(
+        s.model_copy(update={"retries": 0}) if s.kind is StageKind.TEST else s
+        for s in FEATURE.stages
+    )
+    strict = FEATURE.model_copy(update={"stages": stages})
+    result = transition(Task(TaskState.TESTING), TestsFinished(False), Limits(), strict)
     assert result.state is TaskState.NEEDS_HUMAN
-    assert notices(result, NoticeCode.REJECTED)
-
-
-def test_late_internal_events_are_ignored():
-    # /stop 뒤에 늦게 끝난 작업 결과는 상태를 바꾸지 않는다
-    for event in (StageSucceeded(), TestsFinished(True), ReviewFinished(True), PrMerged()):
-        result = step(TaskState.STOPPED, event)
-        assert result.state is TaskState.STOPPED
-    assert step(TaskState.AWAIT_DESIGN_APPROVAL, TestsFinished(True)).effects == ()
-    assert step(TaskState.OPINIONS, StageSucceeded()).effects == ()

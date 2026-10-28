@@ -26,12 +26,15 @@ from pydantic import (
 )
 
 from bot.agents.base import Stage
+from bot.org import Org, OrgError, load_org
+from bot.pipeline import Pipeline, PipelineError, load_pipelines
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 DEFAULT_PROJECTS_PATH = PACKAGE_DIR / "projects.yaml"
 DEFAULT_ENV_PATH = PACKAGE_DIR.parent / ".env"
 
 ENV_KEYS = ("DISCORD_TOKEN", "DISCORD_GUILD_ID", "ZERO_USER_ID", "OPS_CHANNEL_ID")
+OPTIONAL_ENV_KEYS = ("REPORT_CHANNEL_ID",)
 
 _PROJECT_KEY = re.compile(r"^[a-z][a-z0-9-]{0,39}$")
 _GITHUB_REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -60,6 +63,10 @@ class _Model(BaseModel):
 
 class ProjectConfig(_Model):
     forum_channel_id: DiscordId
+    # 제품 채팅 채널: 팀장과 의견을 나누고 /task로 일을 시작한다 (ADR-007)
+    chat_channel_id: DiscordId | None = None
+    # 제품 Claude 디자인 시스템 링크 (ADR-007, 화면 디자인 단계)
+    design_system_url: str | None = None
     repo: ExpandedPath
     github: str = Field(pattern=_GITHUB_REPO.pattern)
     base_branch: str = "develop"
@@ -96,6 +103,8 @@ class PathsConfig(_Model):
     worktrees: ExpandedPath = Path("~/.zerosync/worktrees")
     runs: ExpandedPath = Path("~/.zerosync/runs")
     db: ExpandedPath = Path("~/.zerosync/zerosync.db")
+    # 비공개 회사 설정 저장소 (org.yaml, agents/). 없으면 기본 조직을 쓴다 (SPEC 9.1-1)
+    company: ExpandedPath = Path("~/.zerosync/company")
 
     @property
     def lock(self) -> Path:
@@ -106,9 +115,9 @@ class PathsConfig(_Model):
 
 ModelName = Annotated[str, Field(min_length=1)]
 
-# 단계별 담당 (SPEC 5.2). Codex는 읽기 전용 단계만 맡는다
-CLAUDE_STAGES = frozenset(Stage) - {Stage.REVIEW}
-CODEX_STAGES = frozenset({Stage.OPINION, Stage.DEBATE, Stage.REVIEW})
+# 단계별 기본 모델을 둘 수 있는 단계 (SPEC 5.2). Codex는 읽기 전용 단계만 맡는다
+CLAUDE_STAGES = frozenset(Stage)
+CODEX_STAGES = frozenset({Stage.OPINION, Stage.DEBATE, Stage.REVIEW, Stage.DIAGNOSE})
 
 
 class CliConfig(_Model):
@@ -144,6 +153,10 @@ class LimitsConfig(_Model):
     max_test_retries: int = Field(default=2, ge=0)
     cli_timeout_sec: int = Field(default=3600, ge=1)
     concurrent_builds: int = Field(default=1, ge=1)
+    # 에이전트 CLI 동시 실행 수 (ADR-007: 한 번에 하나)
+    concurrent_agents: int = Field(default=1, ge=1)
+    # 구독 사용량 한도에 걸렸을 때 대기열을 멈추는 시간 [검증 필요] (SPEC V15)
+    usage_pause_minutes: int = Field(default=60, ge=1)
     merge_poll_sec: int = Field(default=300, ge=1)
     remind_after_hours: int = Field(default=24, ge=1)
 
@@ -166,9 +179,13 @@ class ProjectsFile(_Model):
     def _unique_forums(self) -> "ProjectsFile":
         seen: dict[str, str] = {}
         for key, project in self.projects.items():
-            other = seen.setdefault(project.forum_channel_id, key)
-            if other != key:
-                raise ValueError(f"프로젝트 {other}와 {key}의 forum_channel_id가 같다")
+            channels = [project.forum_channel_id]
+            if project.chat_channel_id is not None:
+                channels.append(project.chat_channel_id)
+            for channel in channels:
+                if channel in seen:
+                    raise ValueError(f"프로젝트 {seen[channel]}와 {key}의 채널 ID가 겹친다")
+                seen[channel] = key
         return self
 
 
@@ -177,6 +194,8 @@ class Secrets(_Model):
     discord_guild_id: DiscordId
     zero_user_id: DiscordId
     ops_channel_id: DiscordId
+    # #대표실 (아침·주간 보고). 없으면 운영 채널로 보고한다 (ADR-007)
+    report_channel_id: DiscordId | None = None
 
 
 class Config(_Model):
@@ -185,6 +204,15 @@ class Config(_Model):
     cli: CliConfig
     limits: LimitsConfig
     secrets: Secrets
+    org: Org
+    pipelines: dict[str, Pipeline]
+
+    def project_for_chat(self, channel_id: str) -> str | None:
+        """제품 채팅 채널 ID로 프로젝트 키를 찾는다."""
+        for key, project in self.projects.items():
+            if project.chat_channel_id == channel_id:
+                return key
+        return None
 
     def project_for_forum(self, channel_id: str) -> str | None:
         """포럼 채널 ID로 프로젝트 키를 찾는다. 등록되지 않은 채널이면 None."""
@@ -246,17 +274,28 @@ def load_config(
     if missing:
         raise ConfigError(f"환경변수가 없다: {', '.join(missing)} (.env.example 참고)")
 
+    for key in OPTIONAL_ENV_KEYS:
+        value = environ.get(key, env_file.get(key))
+        if value:
+            merged[key] = value
     try:
         projects = ProjectsFile.model_validate(raw)
         secrets = Secrets.model_validate({key.lower(): value for key, value in merged.items()})
     except ValidationError as error:
         raise ConfigError(_describe(error)) from None
+    try:
+        org = load_org(projects.paths.company)
+        pipelines = load_pipelines(projects.paths.company, org)
+    except (OrgError, PipelineError) as error:
+        raise ConfigError(str(error)) from None
     return Config(
         projects=projects.projects,
         paths=projects.paths,
         cli=projects.cli,
         limits=projects.limits,
         secrets=secrets,
+        org=org,
+        pipelines=pipelines,
     )
 
 

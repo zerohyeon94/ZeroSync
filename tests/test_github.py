@@ -18,6 +18,7 @@ from bot.github import (
     GitHubError,
     GitOps,
     PushRefused,
+    VaultGit,
     check_push,
     commit_message_problems,
 )
@@ -219,3 +220,27 @@ def test_github_client_commands(fake_gh):
     assert json.loads(labels["stdin"]) == {"labels": ["type:feature"]}
     pr = recorded[5]
     assert "--draft" in pr["args"] and pr["args"][pr["args"].index("--base") + 1] == "develop"
+
+
+# VaultGit (실제 git)
+
+
+def test_vault_git_commits_only_written_files(repo):
+    (repo / "기능").mkdir()
+    (repo / "기능" / "배너.md").write_text("봇이 씀\n")
+    (repo / "README.md").write_text("Zero가 고치던 중\n")
+    done = run(
+        VaultGit().commit(repo, ["기능/배너.md"], "docs(gagaessi): 배너", "ZeroSync-Task: x")
+    )
+    assert done is True
+    log = git("log", "-1", "--format=%B", cwd=repo)
+    assert "docs(gagaessi): 배너" in log and "ZeroSync-Task: x" in log
+    assert git(
+        "-c", "core.quotePath=false", "show", "--name-only", "--format=", "HEAD", cwd=repo
+    ).split() == ["기능/배너.md"]
+    assert "README.md" in git("status", "--porcelain", cwd=repo)
+
+
+def test_vault_git_skips_non_git_folder(tmp_path):
+    (tmp_path / "a.md").write_text("x")
+    assert run(VaultGit().commit(tmp_path, ["a.md"], "t", "z")) is False

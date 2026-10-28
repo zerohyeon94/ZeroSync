@@ -1,0 +1,18 @@
+# 출시 흐름 (SPEC 3.5). 봇의 기본 선언과 같다. 파일 이름이 파이프라인 키다
+name: 출시
+command: /release
+triggers:
+- discord_task
+priority: release
+stages:
+- id: check
+  kind: test
+  scope: full
+- id: prepare
+  kind: release_prep
+  agent: beta
+- id: approve
+  kind: gate
+budget:
+  max_calls: 8
+  max_minutes: 60

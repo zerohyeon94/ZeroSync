@@ -8,7 +8,14 @@ from pathlib import Path
 
 import pytest
 
-from bot.prompts import HistoryEntry, debate_prompt, opinion_prompt, with_format_error
+from bot.org import DEFAULT_ORG
+from bot.prompts import (
+    HistoryEntry,
+    debate_prompt,
+    opinion_prompt,
+    persona_for,
+    with_format_error,
+)
 from bot.render import MAX_POST_LENGTH, render_format_error, render_notice, render_opinion_post
 from bot.schemas import Opinion
 from bot.workflow.mentions import ACTION_REQUIRED, Moment, should_mention
@@ -36,10 +43,13 @@ def make_opinion(**overrides):
     return Opinion.model_validate(data)
 
 
+BETA = persona_for(DEFAULT_ORG, "beta")
+ALPHA = persona_for(DEFAULT_ORG, "alpha")
+
 HISTORY = [
-    HistoryEntry("claude", "**찬성** — 배너로 충분하다"),
-    HistoryEntry("codex", "**반대** — 푸시 알림이 더 단순하다"),
-    HistoryEntry("zero", "@codex 푸시 권한이 없으면?"),
+    HistoryEntry("Beta · 기획팀장", "**찬성** — 배너로 충분하다"),
+    HistoryEntry("Alpha · 개발팀장", "**반대** — 푸시 알림이 더 단순하다"),
+    HistoryEntry("Zero", "@alpha 푸시 권한이 없으면?"),
 ]
 
 
@@ -47,49 +57,58 @@ HISTORY = [
 
 
 def test_first_opinion_prompt_snapshot():
-    prompt = opinion_prompt(
-        "claude", title="예산 배너", post="예산을 넘으면 배너를 띄우자\n가능할까?"
-    )
+    prompt = opinion_prompt(BETA, title="예산 배너", post="예산을 넘으면 배너를 띄우자\n가능할까?")
     assert "지금까지의 흐름" not in prompt
-    for name in ("persona", "perspective", "title", "post", "history", "request", "schema"):
+    for name in ("persona", "perspective", "profile", "title", "post", "history", "request"):
         assert f"${name}" not in prompt
-    check_snapshot("opinion_first_claude", prompt)
+    check_snapshot("opinion_first_beta", prompt)
 
 
 def test_follow_up_prompt_snapshot():
     prompt = opinion_prompt(
-        "codex",
+        ALPHA,
         title="예산 배너",
         post="예산을 넘으면 배너를 띄우자",
         question="푸시 권한이 없으면?",
         history=HISTORY,
     )
-    assert "[Alpha · Codex]" in prompt and "[Zero]" in prompt
-    check_snapshot("opinion_follow_up_codex", prompt)
+    assert "[Alpha · 개발팀장]" in prompt and "[Zero]" in prompt
+    check_snapshot("opinion_follow_up_alpha", prompt)
 
 
 def test_debate_prompt_snapshot():
     prompt = debate_prompt(
-        "claude",
+        BETA,
         title="예산 배너",
         post="예산을 넘으면 배너를 띄우자",
         own="**찬성** — 배너로 충분하다",
-        other_agent="codex",
+        other_name="Alpha · 개발팀장",
         other="**반대** — 푸시 알림이 더 단순하다",
         history=HISTORY,
     )
-    check_snapshot("debate_claude", prompt)
+    check_snapshot("debate_beta", prompt)
 
 
-def test_personas_differ_by_agent():
-    beta = opinion_prompt("claude", title="t", post="p")
-    alpha = opinion_prompt("codex", title="t", post="p")
-    assert "Beta · Claude (ISFJ)" in beta and "장기 유지보수" in beta
-    assert "Alpha · Codex (INTJ)" in alpha and "엣지 케이스" in alpha
+def test_personas_come_from_org():
+    beta = opinion_prompt(BETA, title="t", post="p")
+    alpha = opinion_prompt(ALPHA, title="t", post="p")
+    assert "Beta · 기획팀장 (INFJ)" in beta and "사용 흐름" in beta
+    assert "Alpha · 개발팀장 (INTJ)" in alpha and "엣지 케이스" in alpha
+    # 엔진 이름은 프롬프트에 드러나지 않는다 (SPEC Q16)
+    assert "Claude" not in beta and "Codex" not in alpha
+
+
+def test_profile_file_text_goes_into_prompt():
+    org = DEFAULT_ORG.model_copy(
+        update={"profiles": {"delta": "역량: 기준 대조\n위험: 기준 밖 문제"}}
+    )
+    prompt = opinion_prompt(persona_for(org, "delta"), title="t", post="p")
+    assert "## 인격과 역량" in prompt and "기준 밖 문제" in prompt
+    assert "## 인격과 역량" not in opinion_prompt(BETA, title="t", post="p")
 
 
 def test_post_text_with_dollar_sign_is_kept():
-    assert "가격 $5 이상" in opinion_prompt("claude", title="t", post="가격 $5 이상")
+    assert "가격 $5 이상" in opinion_prompt(BETA, title="t", post="가격 $5 이상")
 
 
 def test_format_error_prompt_appends_error():
@@ -157,11 +176,14 @@ def test_every_notice_code_has_text():
         (Moment.DOC_SYNC_READY, True),
         (Moment.NEEDS_HUMAN, True),
         (Moment.BOT_ERROR, True),
+        (Moment.HIRING_PROPOSAL, True),
+        (Moment.REMINDER, True),
         (Moment.IMPLEMENT_STARTED, False),
         (Moment.TEST_RUNNING, False),
         (Moment.REVIEW_RUNNING, False),
         (Moment.TEST_RESULT, False),
         (Moment.REVIEW_ROUND_RESULT, False),
+        (Moment.STAGE_DONE, False),
         (Moment.NOTICE, False),
     ],
 )
@@ -170,12 +192,13 @@ def test_mention_rules(moment, expected):
 
 
 def test_action_required_covers_only_listed_moments():
-    assert len(ACTION_REQUIRED) == 6
+    assert len(ACTION_REQUIRED) == 8
     assert set(Moment) - ACTION_REQUIRED == {
         Moment.IMPLEMENT_STARTED,
         Moment.TEST_RUNNING,
         Moment.REVIEW_RUNNING,
         Moment.TEST_RESULT,
         Moment.REVIEW_ROUND_RESULT,
+        Moment.STAGE_DONE,
         Moment.NOTICE,
     }

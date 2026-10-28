@@ -6,8 +6,29 @@ Discord·GitHub 모두 마크다운을 쓰므로 같은 함수를 쓴다. Discor
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from bot.schemas import DesignSummary, Finding, ImplementationReport, Opinion, Review
+from bot.schemas import (
+    DesignSummary,
+    DiagnosisReport,
+    DocSyncProposal,
+    Finding,
+    ImplementationReport,
+    Opinion,
+    PlanSummary,
+    ReleasePrep,
+    Review,
+    UiDesignSummary,
+)
 from bot.testrun import TestReport
+
+
+@dataclass(frozen=True)
+class SpecPart:
+    """승인된 산출물 하나 (기획, 화면 디자인, 설계, 진단). 구현·리뷰·PR이 함께 참조한다."""
+
+    label: str
+    doc: str | None  # 앱 저장소 경로. 진단은 없다
+    summary: str
+    text: str  # 프롬프트에 넣는 전문 요약
 
 
 @dataclass(frozen=True)
@@ -57,6 +78,91 @@ def render_design(summary: DesignSummary, *, doc_url: str | None = None) -> str:
     if summary.risks:
         lines += ["", "위험", *_bullets(summary.risks)]
     lines += ["", f"설계 전문: {doc_url or summary.design_doc}"]
+    return "\n".join(lines)
+
+
+def render_plan(plan: PlanSummary, *, doc_url: str | None = None) -> str:
+    lines = [
+        f"**기획** — {plan.conventional_title}",
+        "",
+        f"변경 유형: {plan.change_type.label} · 대상 기능: {plan.target_feature}"
+        f" · 화면 변경: {'있음' if plan.has_ui_change else '없음'}",
+        "",
+        f"문제: {plan.problem}",
+        "",
+        plan.summary,
+        "",
+        "이번에 할 것",
+        *_bullets(plan.in_scope),
+        "",
+        "하지 않을 것",
+        *_bullets(plan.out_of_scope),
+        "",
+        "완료 기준",
+        *_bullets(plan.acceptance),
+    ]
+    if plan.edge_cases:
+        lines += ["", "예외 상황", *_bullets(plan.edge_cases)]
+    lines += ["", f"기획서: {doc_url or plan.plan_doc}"]
+    return "\n".join(lines)
+
+
+def render_ui_design(ui: UiDesignSummary, *, doc_url: str | None = None) -> str:
+    lines = [f"**화면 디자인** — {ui.summary}", "", "화면"]
+    lines += [f"- {screen.name}: {', '.join(screen.states)}" for screen in ui.screens]
+    if ui.components:
+        lines += ["", "컴포넌트", *_bullets(ui.components)]
+    if ui.design_system_changes:
+        lines += ["", "디자인 시스템 변경", *_bullets(ui.design_system_changes)]
+    if ui.out_of_plan:
+        lines += ["", "기획 밖 제안", *_bullets(ui.out_of_plan)]
+    lines += ["", f"명세: {doc_url or ui.design_doc}"]
+    if ui.design_url:
+        lines.append(f"Claude 디자인: {ui.design_url}")
+    return "\n".join(lines)
+
+
+def render_diagnosis(report: DiagnosisReport) -> str:
+    lines = [
+        f"**진단** — {report.cause.label} (확신도 {report.confidence.label})",
+        "",
+        report.summary,
+        "",
+        "재현",
+        *_bullets(report.reproduction),
+        "",
+        "근거",
+        *_bullets(report.evidence),
+        "",
+        f"수정 방향: {report.fix_direction}",
+    ]
+    change = report.change()
+    if change is not None:
+        lines += [
+            "",
+            f"변경 유형: {change.change_type.label} · 대상 기능: {change.target_feature}"
+            f" · 제목: {change.conventional_title}",
+        ]
+    return "\n".join(lines)
+
+
+def render_release_prep(prep: ReleasePrep) -> str:
+    lines = [f"**출시 준비** — 버전 {prep.version}", "", "점검 목록"]
+    lines += [f"- [{item.state.label}] {item.item}" for item in prep.checklist]
+    if prep.blockers:
+        lines += ["", "막힌 것", *_bullets(prep.blockers)]
+    if prep.certificate_expiry:
+        lines += ["", "인증서·프로비저닝 만료"]
+        lines += [f"- {c.name}: {c.expires}" for c in prep.certificate_expiry]
+    lines += ["", "릴리스 노트 (초안)", "", prep.release_notes]
+    if prep.store_description:
+        lines += ["", "스토어 설명 (초안)", "", prep.store_description]
+    return "\n".join(lines)
+
+
+def render_doc_sync(proposal: DocSyncProposal) -> str:
+    lines = [f"**문서 반영안** — {proposal.summary}", ""]
+    lines += [f"- {file.action} `{file.path}` ({len(file.content)}자)" for file in proposal.files]
     return "\n".join(lines)
 
 
@@ -113,7 +219,7 @@ def render_review(review: Review, *, round_: int) -> str:
 def render_pr_body(
     *,
     decision: str,
-    summary: DesignSummary,
+    specs: Sequence[SpecPart],
     report: ImplementationReport | None,
     tests: TestReport | None,
     reviews: Sequence[ReviewRound],
@@ -121,14 +227,18 @@ def render_pr_body(
     branch: str,
     issue: int,
 ) -> str:
-    """PR 본문 (운영 규약 1.9). 변경 요약·설계 의도·확인할 점은 Beta의 구현 보고에서 온다."""
+    """PR 본문 (운영 규약 1.9). 변경 요약·설계 의도·확인할 점은 구현 담당의 보고에서 온다."""
     lines = ["## 결정", "", decision.strip(), ""]
     if report is not None:
         lines += ["## 변경 요약", "", report.changes_summary, ""]
         lines += ["## 설계 의도", "", report.design_intent, ""]
         if report.check_points:
             lines += ["## 확인할 점", "", *_bullets(report.check_points), ""]
-    lines += ["## 설계", "", f"`{summary.design_doc}` — {summary.summary}", ""]
+    lines += ["## 기획과 설계", ""]
+    for part in specs:
+        where = f"`{part.doc}` — " if part.doc else ""
+        lines.append(f"- {part.label}: {where}{part.summary}")
+    lines.append("")
     lines += ["## 테스트", "", render_test_report(tests) if tests else "아직 실행 전", ""]
     lines += ["## 리뷰 이력", ""]
     if reviews:

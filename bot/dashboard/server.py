@@ -5,8 +5,9 @@
 """
 
 import sqlite3
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -25,6 +26,8 @@ class DashboardSettings:
     db: Path
     runs_dir: Path
     guild_id: str | None = None  # 있으면 작업에 Discord 게시글 링크를 단다
+    daily_calls: Mapping[str, int] = field(default_factory=dict)  # 에이전트별 하루 한도
+    now: Callable[[], datetime] = lambda: datetime.now(UTC)
 
     def discord_url(self, thread: str) -> str | None:
         if not self.guild_id:
@@ -61,7 +64,17 @@ def _route(
     params: dict[str, str],
 ) -> Response:
     if not parts:
-        return _ok(views.summary_page(queries.project_summaries(conn), queries.stage_stats(conn)))
+        now = settings.now()
+        today = now.astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+        data = queries.overview(
+            conn,
+            today_start=today.astimezone(UTC).isoformat(),
+            week_start=(today - timedelta(days=7)).astimezone(UTC).isoformat(),
+        )
+        overview = views.overview_section(data, now=now, daily_calls=settings.daily_calls)
+        return _ok(
+            views.summary_page(queries.project_summaries(conn), queries.stage_stats(conn), overview)
+        )
     if parts == ["tasks"]:
         project, state = params.get("project", ""), params.get("state", "")
         tasks = queries.list_tasks(conn, project=project or None, state=state or None)
@@ -101,6 +114,10 @@ def _route(
                 limit=RUN_LIMIT,
             )
         )
+    if parts == ["ideas"]:
+        project = params.get("project", "")
+        ideas = queries.list_ideas(conn, project=project or None)
+        return _ok(views.ideas_page(ideas, projects=queries.projects(conn), project=project))
     if len(parts) == 3 and parts[0] == "runs" and parts[2] == "log":
         return _log(settings, conn, parts[1])
     return _not_found("없는 주소다")

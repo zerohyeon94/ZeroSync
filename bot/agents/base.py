@@ -10,17 +10,23 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-AgentName = Literal["claude", "codex"]
+# 에이전트 이름(beta, alpha …)은 회사 설정(org.yaml)이 정한다. 엔진 이름과 다르다 (ADR-006 4절)
+AgentName = str
+EngineName = Literal["claude", "codex"]
 Mode = Literal["read_only", "write_worktree"]
 
 
 class Stage(StrEnum):
     OPINION = "opinion"
     DEBATE = "debate"
+    PLAN = "plan"
+    UI_DESIGN = "ui_design"
     DESIGN = "design"
+    DIAGNOSE = "diagnose"
     IMPLEMENT = "implement"
     FIX = "fix"
     REVIEW = "review"
+    RELEASE_PREP = "release_prep"
     DOC_SYNC = "doc_sync"
 
 
@@ -48,6 +54,8 @@ class AgentRequest:
     resume_session: str | None = None  # Claude 세션 이어가기 (최적화, 필수 아님)
     # 응답 JSON 스키마. 주면 CLI의 구조화 출력으로 강제한다 (운영 규약 2.1, SPEC 5.2)
     output_schema: Mapping[str, Any] | None = None
+    # 에이전트별 단계 모델 (org.yaml). 없으면 러너의 단계별 기본값을 쓴다
+    model: str | None = None
 
 
 @dataclass(frozen=True)
@@ -62,7 +70,7 @@ class AgentResult:
 
 
 class AgentRunner(Protocol):
-    name: AgentName
+    name: EngineName
 
     async def run(self, request: AgentRequest) -> AgentResult: ...
 

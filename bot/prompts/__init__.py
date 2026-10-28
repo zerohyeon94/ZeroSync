@@ -14,43 +14,50 @@ from string import Template
 
 from pydantic import BaseModel
 
-from bot.agents.base import AgentName
-from bot.schemas import DesignSummary, ImplementationReport, Opinion, Review
+from bot.org import Org
+from bot.schemas import (
+    ChangeSummary,
+    DesignSummary,
+    DiagnosisReport,
+    DocSyncProposal,
+    ImplementationReport,
+    Opinion,
+    PlanSummary,
+    ReleasePrep,
+    Review,
+    UiDesignSummary,
+)
 
 PROMPTS_DIR = Path(__file__).resolve().parent
 
 
 @dataclass(frozen=True)
 class Persona:
-    name: str
+    """프롬프트에 넣는 인격. 회사 설정(org.yaml, agents/<이름>.md)에서 만든다 (SPEC 5.3)."""
+
+    name: str  # 예: Beta · 기획팀장 (INFJ)
     perspective: str
     basic_question: str
+    profile: str = ""  # 인격 파일 전문 (역량, 위험과 보완)
+    rejected: tuple[str, ...] = ()  # Zero가 거절한 이 팀장의 채용 제안 (운영 규약 1.12)
 
 
-PERSONAS: dict[AgentName, Persona] = {
-    "claude": Persona(
-        "Beta · Claude (ISFJ)",
-        "설계, 장기 유지보수, 기존 코드와의 일관성, 사용자 경험",
-        "어떻게 하면 제대로 만들 수 있나",
-    ),
-    "codex": Persona(
-        "Alpha · Codex (INTJ)",
-        "구현 난이도, 성능, 엣지 케이스, 반례, 더 단순한 대안",
-        "왜 실패할 수 있나, 더 작게 할 수 있나",
-    ),
-}
+def persona_for(org: Org, agent: str, rejected: Sequence[str] = ()) -> Persona:
+    spec = org.agents[agent]
+    name = org.display(agent) + (f" ({spec.mbti})" if spec.mbti else "")
+    return Persona(name, spec.perspective, spec.basic_question, org.profile(agent), tuple(rejected))
 
-DISPLAY_NAMES: dict[str, str] = {
-    "zero": "Zero",
-    "claude": "Beta · Claude",
-    "codex": "Alpha · Codex",
-    "bot": "ZeroSync",
-}
+
+HIRING_GUIDE = (
+    "자기 팀 역량 밖의 일이 반복되거나, 다른 관점이나 실제로 일을 맡을 담당이 더 필요하면 "
+    "출력의 hiring_proposal에 근거와 함께 새 팀·팀원을 제안한다. 근거가 없으면 null로 둔다. "
+    "팀이나 역할을 직접 만들지 않는다. 채용은 Zero가 정한다."
+)
 
 
 @dataclass(frozen=True)
 class HistoryEntry:
-    """게시글 흐름의 한 줄. speaker는 zero, claude, codex, bot 중 하나."""
+    """게시글 흐름의 한 줄. speaker는 표시 이름(예: Zero, Beta · 기획팀장)이다."""
 
     speaker: str
     text: str
@@ -70,18 +77,31 @@ def _history(entries: Sequence[HistoryEntry]) -> str:
         return ""
     lines = ["", "## 지금까지의 흐름", ""]
     for entry in entries:
-        lines.append(f"[{DISPLAY_NAMES.get(entry.speaker, entry.speaker)}]")
+        lines.append(f"[{entry.speaker}]")
         lines.append(entry.text.strip())
         lines.append("")
     return "\n".join(lines)
 
 
-def _common(agent: AgentName, title: str, post: str) -> dict[str, str]:
-    persona = PERSONAS[agent]
+def _profile(persona: Persona) -> str:
+    parts = []
+    if persona.profile.strip():
+        parts.append(f"## 인격과 역량\n\n{persona.profile.strip()}")
+    hiring = HIRING_GUIDE
+    if persona.rejected:
+        hiring += "\n\nZero가 거절한 제안 (새 근거 없이 다시 제안하지 않는다):\n" + "\n".join(
+            f"- {line}" for line in persona.rejected
+        )
+    parts.append(f"## 채용 제안\n\n{hiring}")
+    return "\n" + "\n\n".join(parts) + "\n\n"
+
+
+def _common(persona: Persona, title: str, post: str) -> dict[str, str]:
     return {
         "persona": persona.name,
         "perspective": persona.perspective,
         "basic_question": persona.basic_question,
+        "profile": _profile(persona),
         "title": title.strip(),
         "post": post.strip(),
         "schema": _schema(),
@@ -89,7 +109,7 @@ def _common(agent: AgentName, title: str, post: str) -> dict[str, str]:
 
 
 def opinion_prompt(
-    agent: AgentName,
+    persona: Persona,
     *,
     title: str,
     post: str,
@@ -110,27 +130,27 @@ def opinion_prompt(
             "다른 에이전트의 의견은 아직 없으며 참고하지 않는다."
         )
     return _template("opinion").substitute(
-        _common(agent, title, post), history=_history(history), request=request
+        _common(persona, title, post), history=_history(history), request=request
     )
 
 
 def debate_prompt(
-    agent: AgentName,
+    persona: Persona,
     *,
     title: str,
     post: str,
     own: str,
-    other_agent: AgentName,
+    other_name: str,
     other: str,
     history: Sequence[HistoryEntry] = (),
 ) -> str:
     """반박 프롬프트. own·other는 렌더링된 직전 의견 전문이다."""
     return _template("debate").substitute(
-        _common(agent, title, post),
+        _common(persona, title, post),
         history=_history(history),
         own=own.strip(),
         other=other.strip(),
-        other_name=DISPLAY_NAMES[other_agent],
+        other_name=other_name,
     )
 
 
@@ -144,109 +164,260 @@ def with_format_error(prompt: str, error: str) -> str:
     )
 
 
-# Phase 2: 설계, 구현, 수정, 리뷰
+# 흐름의 단계: 기획, 화면 디자인, 설계, 진단, 구현, 수정, 리뷰, 출시 준비, 문서 반영
 
 
-def _persona(agent: AgentName) -> dict[str, str]:
-    persona = PERSONAS[agent]
-    return {"persona": persona.name, "perspective": persona.perspective}
+def _persona(persona: Persona) -> dict[str, str]:
+    return {
+        "persona": persona.name,
+        "perspective": persona.perspective,
+        "profile": _profile(persona),
+    }
 
 
 def _section(title: str, body: str) -> str:
     return f"\n## {title}\n\n{body.strip()}\n" if body.strip() else ""
 
 
-def design_text(summary: DesignSummary) -> str:
-    """프롬프트에 넣는 설계 요약."""
+def _lines(label: str, items: Sequence[str]) -> list[str]:
+    return [f"- {label}:", *(f"  - {item}" for item in items)] if items else []
+
+
+def change_text(change: ChangeSummary) -> str:
+    return "\n".join(
+        [
+            f"- 변경 유형: {change.change_type.label} ({change.change_type.value})",
+            f"- 대상 기능: {change.target_feature}",
+            f"- slug: {change.slug}",
+            f"- 제목: {change.conventional_title}",
+        ]
+    )
+
+
+def plan_text(plan: PlanSummary) -> str:
     lines = [
-        f"- 변경 유형: {summary.change_type.label} ({summary.change_type.value})",
-        f"- 대상 기능: {summary.target_feature}",
-        f"- 제목: {summary.conventional_title}",
-        f"- 요약: {summary.summary}",
-        "- 바꿀 것:",
-        *(f"  - {item}" for item in summary.changes),
-        "- 테스트 계획:",
-        *(f"  - {item}" for item in summary.test_plan),
+        f"기획서: `{plan.plan_doc}`",
+        change_text(plan),
+        f"- 문제: {plan.problem}",
+        f"- 요약: {plan.summary}",
+        *_lines("할 것", plan.in_scope),
+        *_lines("하지 않을 것", plan.out_of_scope),
+        *_lines("완료 기준", plan.acceptance),
+        *_lines("예외 상황", plan.edge_cases),
     ]
-    if summary.risks:
-        lines += ["- 위험:", *(f"  - {item}" for item in summary.risks)]
     return "\n".join(lines)
 
 
-def design_prompt(
+def ui_text(ui: UiDesignSummary) -> str:
+    lines = [f"화면 디자인 명세: `{ui.design_doc}`", f"- 요약: {ui.summary}", "- 화면:"]
+    lines += [f"  - {screen.name}: {', '.join(screen.states)}" for screen in ui.screens]
+    lines += _lines("컴포넌트", ui.components)
+    if ui.design_url:
+        lines.append(f"- Claude 디자인: {ui.design_url}")
+    return "\n".join(lines)
+
+
+def design_text(summary: DesignSummary) -> str:
+    """프롬프트에 넣는 설계 요약."""
+    lines = [
+        f"설계 문서: `{summary.design_doc}`",
+        change_text(summary),
+        f"- 요약: {summary.summary}",
+        *_lines("바꿀 것", summary.changes),
+        *_lines("테스트 계획", summary.test_plan),
+        *_lines("위험", summary.risks),
+    ]
+    return "\n".join(lines)
+
+
+def diagnosis_text(report: DiagnosisReport) -> str:
+    lines = [
+        f"진단 ({report.cause.label}, 확신도 {report.confidence.label})",
+        f"- 요약: {report.summary}",
+        *_lines("재현", report.reproduction),
+        *_lines("근거", report.evidence),
+        f"- 수정 방향: {report.fix_direction}",
+    ]
+    return "\n".join(lines)
+
+
+def _features(features: Sequence[str] | None) -> str:
+    if features is None:
+        return "(볼트 기능 폴더를 읽지 못했다. 기존 기능이면 그 이름을 그대로 쓴다)"
+    return "\n".join(f"- {name}" for name in sorted(features)) or "(아직 없다)"
+
+
+def _change_rule(change: ChangeSummary | None, features: Sequence[str] | None) -> str:
+    """변경 유형을 이미 정했으면(기획·진단 승인) 그대로 쓰게 하고, 아니면 목록에서 고르게 한다."""
+    if change is not None:
+        return "Zero가 이미 승인한 값이다. 출력에 그대로 쓴다:\n" + change_text(change)
+    return (
+        "기능 정의서(볼트 `기능/` 폴더) 목록이다. target_feature는 이 목록에서 고르고, "
+        "change_type이 feature_add일 때만 목록에 없는 새 이름을 쓴다.\n" + _features(features)
+    )
+
+
+def _revision(revision: str, previous: str, doc: str) -> str:
+    if not revision:
+        return ""
+    body = f"Zero의 수정 요청:\n{revision.strip()}\n"
+    if previous:
+        body += (
+            f"\n이전 산출물:\n{previous}\n\n같은 파일(`{doc}`)을 고쳐 새 커밋으로 추가한다. "
+            "slug나 변경 유형이 바뀌면 파일 이름도 새 slug로 옮긴다"
+        )
+    return _section("수정 요청", body)
+
+
+def plan_prompt(
+    persona: Persona,
     *,
     title: str,
-    post: str,
+    decision: str,
+    issue: int,
+    features: Sequence[str] | None,
+    history: Sequence[HistoryEntry] = (),
+    revision: str = "",
+    previous: PlanSummary | None = None,
+) -> str:
+    return _template("plan").substitute(
+        _persona(persona),
+        title=title.strip(),
+        issue=issue,
+        decision=decision.strip(),
+        history=_history(history),
+        features=_features(features),
+        revision=_revision(
+            revision, plan_text(previous) if previous else "", previous.plan_doc if previous else ""
+        ),
+        schema=_schema(PlanSummary),
+    )
+
+
+def ui_design_prompt(
+    persona: Persona,
+    *,
+    title: str,
+    issue: int,
+    slug: str,
+    spec: str,
+    design_system: str,
+    revision: str = "",
+    previous: UiDesignSummary | None = None,
+) -> str:
+    return _template("ui_design").substitute(
+        _persona(persona),
+        title=title.strip(),
+        issue=issue,
+        slug=slug,
+        spec=spec.strip() + "\n",
+        design_system=design_system.strip(),
+        revision=_revision(
+            revision, ui_text(previous) if previous else "", previous.design_doc if previous else ""
+        ),
+        schema=_schema(UiDesignSummary),
+    )
+
+
+def design_prompt(
+    persona: Persona,
+    *,
+    title: str,
     decision: str,
     issue: int,
     features: Sequence[str] | None,
     history: Sequence[HistoryEntry] = (),
     revision: str = "",
     previous: DesignSummary | None = None,
+    spec: str = "",
+    change: ChangeSummary | None = None,
 ) -> str:
-    if features is None:
-        feature_text = "(볼트 기능 폴더를 읽지 못했다. 기존 기능이면 그 이름을 그대로 쓴다)"
-    else:
-        feature_text = "\n".join(f"- {name}" for name in sorted(features)) or "(아직 없다)"
-    revision_text = ""
-    if revision:
-        body = f"Zero의 수정 요청:\n{revision.strip()}\n"
-        if previous is not None:
-            body += (
-                f"\n이전 설계 요약:\n{design_text(previous)}\n\n"
-                f"같은 파일(`{previous.design_doc}`)을 고쳐 새 커밋으로 추가한다. "
-                "slug나 변경 유형이 바뀌면 파일 이름도 새 slug로 옮긴다"
-            )
-        revision_text = _section("수정 요청", body)
     return _template("design").substitute(
-        _persona("claude"),
+        _persona(persona),
         title=title.strip(),
         issue=issue,
-        post=post.strip(),
         decision=decision.strip(),
         history=_history(history),
-        features=feature_text,
-        revision=revision_text,
+        spec=_section("승인된 기획과 화면 디자인", spec),
+        change_rule=_change_rule(change, features),
+        revision=_revision(
+            revision,
+            design_text(previous) if previous else "",
+            previous.design_doc if previous else "",
+        ),
         schema=_schema(DesignSummary),
     )
 
 
+def diagnose_prompt(
+    persona: Persona,
+    *,
+    title: str,
+    decision: str,
+    tests: str = "",
+    history: Sequence[HistoryEntry] = (),
+    features: Sequence[str] | None = None,
+    needs_change: bool = True,
+) -> str:
+    if needs_change:
+        rule = (
+            "3. 수정 방향이 승인되면 바로 구현하므로 변경 유형(change_type), "
+            "대상 기능(target_feature), slug, title, scope를 함께 정한다. "
+            "target_feature는 아래 목록에서 고르고, feature_add일 때만 새 이름을 쓴다"
+        )
+        features_text = _section("기능 정의서 목록", _features(features))
+    else:
+        rule = "3. 정기 테스트 실패 보고다. 변경 유형 관련 필드는 null로 둔다"
+        features_text = ""
+    return _template("diagnose").substitute(
+        _persona(persona),
+        title=title.strip(),
+        decision=decision.strip(),
+        tests=_section("봇 테스트 결과", tests),
+        history=_history(history),
+        features=features_text,
+        change_rule=rule,
+        schema=_schema(DiagnosisReport),
+    )
+
+
 def implement_prompt(
-    *, title: str, decision: str, issue: int, branch: str, summary: DesignSummary
+    persona: Persona, *, title: str, decision: str, issue: int, branch: str, spec: str
 ) -> str:
     return _template("implement").substitute(
-        _persona("claude"),
+        _persona(persona),
         title=title.strip(),
         issue=issue,
         branch=branch,
         decision=decision.strip(),
-        design_doc=summary.design_doc,
-        design=design_text(summary) + "\n",
+        spec=spec.strip() + "\n",
         schema=_schema(ImplementationReport),
     )
 
 
 def fix_prompt(
-    *, title: str, issue: int, branch: str, summary: DesignSummary, problems: str
+    persona: Persona, *, title: str, issue: int, branch: str, spec_docs: str, problems: str
 ) -> str:
     return _template("fix").substitute(
-        _persona("claude"),
+        _persona(persona),
         title=title.strip(),
         issue=issue,
         branch=branch,
-        design_doc=summary.design_doc,
+        spec_docs=spec_docs.strip(),
         problems=problems.strip(),
         schema=_schema(ImplementationReport),
     )
 
 
 def review_prompt(
+    persona: Persona,
     *,
+    author: str,
     title: str,
     decision: str,
     issue: int,
     round_: int,
-    summary: DesignSummary,
+    spec: str,
     tests: str,
     diff: str,
     previous_required: str = "",
@@ -258,15 +429,53 @@ def review_prompt(
             previous_required + "\n\n각 항목이 해결됐는지 확인한다. 등급을 낮춰 넘기지 않는다",
         )
     return _template("review").substitute(
-        _persona("codex"),
+        _persona(persona),
+        author=author,
         title=title.strip(),
         issue=issue,
         round=round_,
         decision=decision.strip(),
-        design_doc=summary.design_doc,
-        design=design_text(summary),
+        spec=spec.strip() + "\n",
         tests=tests.strip(),
         previous=previous,
         diff=diff,
         schema=_schema(Review),
+    )
+
+
+def release_prep_prompt(
+    persona: Persona, *, title: str, version: str, decision: str, tests: str
+) -> str:
+    return _template("release_prep").substitute(
+        _persona(persona),
+        title=title.strip(),
+        version=version,
+        decision=decision.strip(),
+        tests=tests.strip() or "결과 없음",
+        schema=_schema(ReleasePrep),
+    )
+
+
+def doc_sync_prompt(
+    persona: Persona,
+    *,
+    title: str,
+    pr: int | None,
+    change: ChangeSummary,
+    spec: str,
+    docs: str,
+    hub: str,
+    today: str,
+) -> str:
+    return _template("doc_sync").substitute(
+        _persona(persona),
+        title=title.strip(),
+        pr=pr or "-",
+        change_type=change.change_type.label,
+        target_feature=change.target_feature,
+        spec=spec.strip() + "\n",
+        docs=docs.strip() or "(없음)",
+        hub=hub,
+        today=today,
+        schema=_schema(DocSyncProposal),
     )

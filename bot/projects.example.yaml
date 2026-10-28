@@ -5,6 +5,7 @@
 projects:
   gagaessi:                                  # 프로젝트 키: 영문 소문자·숫자·-, 40자 이내
     forum_channel_id: "000000000000000000"   # 포럼 채널 ID (따옴표로 감싼 숫자)
+    chat_channel_id: "000000000000000001"    # 제품 채팅 채널 ID (ADR-007). 생략하면 채팅을 받지 않는다
     repo: ~/Developer/GagaeSsi               # 앱 저장소 로컬 경로
     github: owner/GagaeSsi                   # GitHub 저장소 (owner/name)
     base_branch: develop                     # main은 쓸 수 없다 (SPEC 9.5)
@@ -13,6 +14,7 @@ projects:
     vault_hub: 가게씨.md
     vault_tag: brain/gagaessi
     vault_slug: gagaessi
+    design_system_url: null                  # 제품의 Claude 디자인 시스템 링크 (화면 디자인 단계가 참고)
   # orot, jday도 같은 형식 (운영 규약 3.4 표)
 
 paths:
@@ -21,13 +23,16 @@ paths:
   worktrees: ~/.zerosync/worktrees
   runs: ~/.zerosync/runs
   db: ~/.zerosync/zerosync.db
+  # 비공개 회사 설정(org.yaml, agents/). 없으면 기본 조직(ADR-007)을 쓴다. 예시는 examples/company
+  company: ~/.zerosync/company
 
 # 생략하면 기본값을 쓴다
 cli:
   claude: claude        # launchd PATH에서 못 찾으면 절대 경로 (예: /opt/homebrew/bin/claude)
   codex: codex
   # 단계별 모델. 적지 않은 단계는 각 CLI의 기본 모델을 쓴다
-  # Claude 단계: opinion, debate, design, implement, fix, doc_sync
+  # Claude 단계: opinion, debate, plan, ui_design, design, implement, fix, review,
+  #   diagnose, release_prep, doc_sync
   claude_models:
     opinion: sonnet
     debate: sonnet
@@ -35,7 +40,7 @@ cli:
     design: opus
     implement: opus
     fix: opus
-  # Codex 단계: opinion, debate, review
+  # Codex 단계(읽기 전용): opinion, debate, review, diagnose
   codex_models: {}
 
 limits:

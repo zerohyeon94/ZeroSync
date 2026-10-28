@@ -1,6 +1,6 @@
 """설계 요약 스키마 (운영 규약 3.3, 3.8, 4.2, SPEC 5.4).
 
-DESIGN 단계에서 Beta(Claude)가 출력하는 설계 요약 JSON이다.
+DESIGN 단계에서 설계 담당이 출력하는 설계 요약 JSON이다.
 target_feature가 실제 `기능/` 폴더의 파일인지, design_doc이 Issue 번호와 slug에 맞는지는
 검증 컨텍스트로 확인한다.
 
@@ -27,6 +27,7 @@ from pydantic import (
 )
 
 from bot.schemas._types import Item
+from bot.schemas.hiring import HiringProposal
 
 # 검증 컨텍스트 키: 대상 프로젝트 `기능/` 폴더의 파일 이름 집합 (확장자 .md 제외)
 FEATURE_NAMES = "feature_names"
@@ -85,7 +86,12 @@ _BRANCH_TYPES = {
 }
 
 
-class DesignSummary(BaseModel):
+class ChangeSummary(BaseModel):
+    """변경 유형·대상 기능·slug·제목·영역. 흐름의 첫 단계(기획, 진단, 설계)가 정한다 (3.8).
+
+    브랜치·커밋·PR 제목과 결정 노트가 이 값에서 나온다.
+    """
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     change_type: ChangeType
@@ -93,26 +99,12 @@ class DesignSummary(BaseModel):
     slug: Slug
     title: Title
     scope: Scope | None = None
-    summary: DesignText
-    changes: list[Item] = Field(min_length=1, max_length=8)
-    test_plan: list[Item] = Field(min_length=1, max_length=6)
-    risks: list[Item] = Field(default_factory=list, max_length=3)
-    design_doc: DesignDoc
 
     @field_validator("target_feature")
     @classmethod
     def _strip_md_extension(cls, value: str) -> str:
         # 기능 폴더 이름과 같은 조합형(NFC)으로 비교한다
         return unicodedata.normalize("NFC", value.removesuffix(".md"))
-
-    @model_validator(mode="after")
-    def _design_doc_matches(self, info: ValidationInfo) -> Self:
-        issue = (info.context or {}).get(ISSUE_NUMBER)
-        if not self.design_doc.endswith(f"-{self.slug}.md"):
-            raise ValueError(f"design_doc은 slug와 같은 이름이어야 한다: ...-{self.slug}.md")
-        if issue is not None and self.design_doc != f"docs/설계/{issue}-{self.slug}.md":
-            raise ValueError(f"design_doc은 docs/설계/{issue}-{self.slug}.md 이어야 한다")
-        return self
 
     @model_validator(mode="after")
     def _target_feature_matches_folder(self, info: ValidationInfo) -> Self:
@@ -132,6 +124,22 @@ class DesignSummary(BaseModel):
             )
         return self
 
+    def _check_doc(self, doc: str, folder: str, field: str, info: ValidationInfo) -> None:
+        issue = (info.context or {}).get(ISSUE_NUMBER)
+        if not doc.endswith(f"-{self.slug}.md"):
+            raise ValueError(f"{field}은 slug와 같은 이름이어야 한다: ...-{self.slug}.md")
+        if issue is not None and doc != f"docs/{folder}/{issue}-{self.slug}.md":
+            raise ValueError(f"{field}은 docs/{folder}/{issue}-{self.slug}.md 이어야 한다")
+
+    def change_fields(self) -> dict[str, object]:
+        return {
+            "change_type": self.change_type,
+            "target_feature": self.target_feature,
+            "slug": self.slug,
+            "title": self.title,
+            "scope": self.scope,
+        }
+
     @property
     def conventional_title(self) -> str:
         """커밋·PR 제목 `<type>(<영역>): <요약>` (운영 규약 4.4, 4.5)."""
@@ -146,3 +154,18 @@ class DesignSummary(BaseModel):
         if not BRANCH_NAME_PATTERN.fullmatch(name):
             raise ValueError(f"브랜치 이름 '{name}'이 push 보호 형식에 맞지 않는다")
         return name
+
+
+class DesignSummary(ChangeSummary):
+    summary: DesignText
+    changes: list[Item] = Field(min_length=1, max_length=8)
+    test_plan: list[Item] = Field(min_length=1, max_length=6)
+    risks: list[Item] = Field(default_factory=list, max_length=3)
+    design_doc: DesignDoc
+    # 채용 제안 (운영 규약 1.12). 근거가 있을 때만 붙인다
+    hiring_proposal: HiringProposal | None = None
+
+    @model_validator(mode="after")
+    def _design_doc_matches(self, info: ValidationInfo) -> Self:
+        self._check_doc(self.design_doc, "설계", "design_doc", info)
+        return self

@@ -11,7 +11,8 @@ from typing import Any, Protocol
 
 import discord
 
-from bot.discord_io.rules import AUTHOR_NAMES, mention_text, split_text
+from bot.discord_io.rules import author_name, mention_text, split_text
+from bot.org import DEFAULT_ORG, Org
 from bot.workflow.chat import Attachment, Author
 
 
@@ -30,9 +31,19 @@ class DiscordChat:
         zero_user_id: int,
         webhook_for: Callable[[int], Awaitable[WebhookLike]],
         ops_channel: Callable[[], Awaitable[ChannelLike]],
+        org: Org = DEFAULT_ORG,
+        report_channel: Callable[[], Awaitable[ChannelLike]] | None = None,
+        chat_webhook: Callable[[str], Awaitable[WebhookLike]] | None = None,
+        forum_webhook: Callable[[str], Awaitable[WebhookLike]] | None = None,
     ):
         """webhook_for(thread_id)는 그 게시글이 속한 포럼 채널의 웹훅을 돌려준다."""
         self._zero = zero_user_id
+        self._org = org
+        # 제품 키 → 채팅 채널 웹훅, 포럼 채널 웹훅 (ADR-007)
+        self._chat_webhook = chat_webhook
+        self._forum_webhook = forum_webhook
+        # #대표실이 없으면 운영 채널로 보고한다
+        self._report_channel = report_channel or ops_channel
         self._webhook_for = webhook_for
         self._ops_channel = ops_channel
 
@@ -66,7 +77,7 @@ class DiscordChat:
             files = [_file(a) for a in attachments] if last else []
             message = await webhook.send(
                 chunk,
-                username=AUTHOR_NAMES[author],
+                username=author_name(self._org, author),
                 thread=discord.Object(thread_id),
                 allowed_mentions=self._mentions(mention and index == 0),
                 silent=not mention,
@@ -78,8 +89,67 @@ class DiscordChat:
         assert first_id is not None
         return first_id
 
+    async def chat(
+        self,
+        project: str,
+        author: Author,
+        text: str,
+        *,
+        mention: bool = False,
+        attachments: Sequence[Attachment] = (),
+    ) -> str:
+        if self._chat_webhook is None:
+            raise RuntimeError("제품 채팅 채널이 설정되지 않았다")
+        webhook = await self._chat_webhook(project)
+        chunks = self._content(text, mention)
+        first_id: str | None = None
+        for index, chunk in enumerate(chunks):
+            last = index == len(chunks) - 1
+            message = await webhook.send(
+                chunk,
+                username=author_name(self._org, author),
+                allowed_mentions=self._mentions(mention and index == 0),
+                silent=not mention,
+                files=[_file(a) for a in attachments] if last else [],
+                wait=True,
+            )
+            if first_id is None:
+                first_id = str(message.id)
+        assert first_id is not None
+        return first_id
+
+    async def create_post(self, project: str, title: str, text: str) -> str:
+        """포럼에 [ZeroSync] 이름으로 포스트를 연다. 첫 조각이 포스트 본문이다."""
+        if self._forum_webhook is None:
+            raise RuntimeError("포럼 웹훅이 없다")
+        webhook = await self._forum_webhook(project)
+        chunks = split_text(text)
+        message = await webhook.send(
+            chunks[0],
+            username=author_name(self._org, "bot"),
+            thread_name=title[:100],
+            allowed_mentions=discord.AllowedMentions.none(),
+            silent=True,
+            wait=True,
+        )
+        thread_id = str(message.channel.id)
+        for chunk in chunks[1:]:
+            await webhook.send(
+                chunk,
+                username=author_name(self._org, "bot"),
+                thread=discord.Object(int(thread_id)),
+                silent=True,
+                wait=True,
+            )
+        return thread_id
+
     async def notify_ops(self, text: str, *, mention: bool = False) -> None:
-        channel = await self._ops_channel()
+        await self._send(await self._ops_channel(), text, mention)
+
+    async def report(self, text: str, *, mention: bool = False) -> None:
+        await self._send(await self._report_channel(), text, mention)
+
+    async def _send(self, channel: ChannelLike, text: str, mention: bool) -> None:
         for index, chunk in enumerate(self._content(text, mention)):
             await channel.send(
                 chunk,

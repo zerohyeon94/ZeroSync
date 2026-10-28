@@ -9,32 +9,42 @@
 import asyncio
 import logging
 from collections.abc import Coroutine, Mapping
+from datetime import datetime, timedelta
 from typing import Any
 
 import discord
 from discord import app_commands
 
-from bot.agents.base import AgentName, AgentRunner
-from bot.clock import Clock, SystemClock
+from bot.agents.base import AgentRunner, EngineName
+from bot.clock import Clock, SystemClock, from_iso, to_iso
 from bot.config import Config
 from bot.discord_io.chat import DiscordChat
 from bot.discord_io.rules import (
     WEBHOOK_NAME,
     IncomingMessage,
     MessageKind,
+    chat_command_error,
     classify,
     command_error,
 )
-from bot.github import GitHubClient
+from bot.github import GitHubClient, VaultGit
 from bot.render.status import render_ping, render_status
+from bot.reports import Report, morning_report, weekly_report
+from bot.scheduler import BUILTIN_SCHEDULES, MORNING_REPORT, is_due, parse_cron
 from bot.store import Repository
-from bot.workflow.engine import Engine, ProjectContext
+from bot.workflow.engine import PAUSE_KEY, Engine, ProjectContext
+from bot.workflow.gate import AgentGate
 from bot.workflow.mentions import Moment, should_mention
 from bot.workflow.state import CommandName, Limits, TaskState
 
 log = logging.getLogger(__name__)
 
 EMPTY_POST = "(본문 없음)"
+POST_HINT = (
+    "의견은 제품 채팅 채널에서 나누고, 일은 그 채널에서 `/task feature <제목>`, "
+    "`/task bug <제목>`, `/release <버전>`으로 시작한다. 이 포스트는 작업과 연결되지 않았다."
+)
+REMIND_CHECK_SEC = 600
 ACTIVE_STATES = {state for state in TaskState if not state.is_terminal}
 
 
@@ -47,6 +57,8 @@ def project_contexts(config: Config) -> dict[str, ProjectContext]:
             test_command=project.test,
             github=GitHubClient(project.github),
             feature_dir=config.paths.vault_projects / project.vault_dir / "기능",
+            vault_hub=project.vault_hub,
+            design_system_url=project.design_system_url,
         )
         for key, project in config.projects.items()
     }
@@ -57,7 +69,7 @@ class ZeroSyncBot(discord.Client):
         self,
         config: Config,
         repo: Repository,
-        runners: Mapping[AgentName, AgentRunner],
+        runners: Mapping[EngineName, AgentRunner],
         *,
         clock: Clock | None = None,
         git: Any = None,
@@ -72,14 +84,26 @@ class ZeroSyncBot(discord.Client):
         self.zero_user_id = int(config.secrets.zero_user_id)
         self.guild_ref = discord.Object(int(config.secrets.discord_guild_id))
         self.ops_channel_id = int(config.secrets.ops_channel_id)
+        report_id = config.secrets.report_channel_id
+        self.report_channel_id = int(report_id) if report_id else None
         self.forums: dict[int, str] = {
             int(project.forum_channel_id): key for key, project in config.projects.items()
+        }
+        # 제품 채팅 채널 (ADR-007). 없는 제품은 포럼만 쓴다
+        self.chats: dict[int, str] = {
+            int(project.chat_channel_id): key
+            for key, project in config.projects.items()
+            if project.chat_channel_id
         }
         self.tree = app_commands.CommandTree(self)
         self.chat = DiscordChat(
             zero_user_id=self.zero_user_id,
             webhook_for=self._webhook_for,
             ops_channel=self._ops_channel,
+            org=config.org,
+            report_channel=self._report_channel if self.report_channel_id else None,
+            chat_webhook=self._chat_webhook,
+            forum_webhook=self._forum_webhook,
         )
         self.engine = Engine(
             repo,
@@ -87,6 +111,8 @@ class ZeroSyncBot(discord.Client):
             runners,
             project_contexts(config),
             timeout_sec=config.limits.cli_timeout_sec,
+            org=config.org,
+            pipelines=config.pipelines,
             git=git,
             tests=tests,
             limits=Limits(
@@ -95,6 +121,10 @@ class ZeroSyncBot(discord.Client):
             ),
             worktrees_dir=config.paths.worktrees,
             thread_url=self.thread_url,
+            clock=self.clock,
+            gate=AgentGate(config.limits.concurrent_agents),
+            usage_pause=timedelta(minutes=config.limits.usage_pause_minutes),
+            vault=VaultGit(),
         )
         self._webhooks: dict[int, discord.Webhook] = {}
         self._background: set[asyncio.Task[None]] = set()
@@ -129,9 +159,14 @@ class ZeroSyncBot(discord.Client):
             return
         await self.engine.recover_interrupted()
         await self.engine.prepare_github()
-        self._merge_poller = asyncio.create_task(self._poll_merges())
+        self._loops = [
+            asyncio.create_task(self._poll_merges()),
+            asyncio.create_task(self._remind_loop()),
+            asyncio.create_task(self._schedule_loop()),
+        ]
         await self.chat.notify_ops(
-            f"ZeroSync 봇을 시작했다. 프로젝트: {', '.join(self.config.projects)}",
+            f"ZeroSync 봇을 시작했다. 프로젝트: {', '.join(self.config.projects)}. "
+            f"조직: {', '.join(self.config.org.display(a) for a in self.config.org.agent_names)}",
             mention=should_mention(Moment.NOTICE),
         )
 
@@ -147,10 +182,71 @@ class ZeroSyncBot(discord.Client):
                 log.exception("merge 확인 실패")
             await asyncio.sleep(self.config.limits.merge_poll_sec)
 
+    async def _remind_loop(self) -> None:
+        """Zero 대기가 길어진 작업을 10분마다 확인해 1회 다시 멘션한다 (운영 규약 2.5)."""
+        after = timedelta(hours=self.config.limits.remind_after_hours)
+        while not self.is_closed():
+            try:
+                await self.engine.remind_waiting(after)
+            except Exception:
+                log.exception("재멘션 확인 실패")
+            await asyncio.sleep(REMIND_CHECK_SEC)
+
+    async def _schedule_loop(self) -> None:
+        """내장 일정(아침·주간 보고)을 1분마다 확인한다. 놓친 실행은 한 번만 (SPEC 6.6)."""
+        while not self.is_closed():
+            try:
+                await self.run_due_schedules()
+            except Exception:
+                log.exception("일정 실행 실패")
+            await asyncio.sleep(60)
+
+    async def run_due_schedules(self) -> list[str]:
+        """지금 실행할 일정을 실행하고 이름을 돌려준다."""
+        now = self.clock.now()
+        local = now.astimezone()
+        last = await self.repo.schedule_runs()
+        ran = []
+        for job, text in BUILTIN_SCHEDULES.items():
+            previous = from_iso(last[job]) if job in last else None
+            if not is_due(parse_cron(text), local, previous):
+                continue
+            # 실행 전에 기록한다. 보고가 실패해도 1분마다 다시 보내지 않게 하기 위해서다
+            await self.repo.record_schedule_run(job, to_iso(now))
+            report = await self._build_report(job, now)
+            await self.chat.report(report.text, mention=report.mention)
+            ran.append(job)
+        # 파이프라인 일정 (정기 테스트 등): 제품마다 따로 (SPEC 6.6, ADR-007)
+        for key, pipeline in self.engine.pipelines.items():
+            if pipeline.schedule is None or "schedule" not in pipeline.triggers:
+                continue
+            for project in self.config.projects:
+                job = f"{project}:{key}"
+                previous = from_iso(last[job]) if job in last else None
+                if not is_due(parse_cron(pipeline.schedule), local, previous):
+                    continue
+                await self.repo.record_schedule_run(job, to_iso(now))
+                self.spawn(self.engine.start_scheduled(project, key), f"일정 {job}")
+                ran.append(job)
+        return ran
+
+    async def _build_report(self, job: str, now: datetime) -> Report:
+        if job == MORNING_REPORT:
+            paused = await self.repo.get_state(PAUSE_KEY) or ""
+            return await morning_report(
+                self.repo, self.config.org, now, self.thread_url, paused=paused
+            )
+        return await weekly_report(self.repo, self.config.org, now, list(self.config.projects))
+
+    async def _report_channel(self) -> Any:
+        assert self.report_channel_id is not None
+        return self.get_channel(self.report_channel_id) or await self.fetch_channel(
+            self.report_channel_id
+        )
+
     async def close(self) -> None:
-        poller = getattr(self, "_merge_poller", None)
-        if poller is not None:
-            poller.cancel()
+        for loop in getattr(self, "_loops", []):
+            loop.cancel()
         await super().close()
 
     async def _prepare_webhooks(self) -> None:
@@ -181,6 +277,44 @@ class ZeroSyncBot(discord.Client):
                 hook = await channel.create_webhook(name=WEBHOOK_NAME, reason="ZeroSync 게시용")
                 log.info("웹훅 생성: %s", project)
             self._webhooks[forum_id] = hook
+        for chat_id, project in self.chats.items():
+            try:
+                channel = self.get_channel(chat_id) or await self.fetch_channel(chat_id)
+            except (discord.NotFound, discord.Forbidden) as error:
+                raise RuntimeError(
+                    f"{project}의 chat_channel_id 채널을 찾을 수 없거나 볼 권한이 없다"
+                ) from error
+            if not isinstance(channel, discord.TextChannel):
+                raise RuntimeError(f"{project}의 chat_channel_id가 텍스트 채널이 아니다")
+            self._webhooks[chat_id] = await self._own_webhook(channel, project)
+
+    async def _own_webhook(self, channel: Any, project: str) -> discord.Webhook:
+        assert self.user is not None
+        hooks = await channel.webhooks()
+        hook = next(
+            (
+                h
+                for h in hooks
+                if h.name == WEBHOOK_NAME and h.user is not None and h.user.id == self.user.id
+            ),
+            None,
+        )
+        if hook is None:
+            hook = await channel.create_webhook(name=WEBHOOK_NAME, reason="ZeroSync 게시용")
+            log.info("웹훅 생성: %s #%s", project, getattr(channel, "name", "?"))
+        return hook
+
+    async def _chat_webhook(self, project: str) -> discord.Webhook:
+        for chat_id, key in self.chats.items():
+            if key == project:
+                return self._webhooks[chat_id]
+        raise RuntimeError(f"{project}의 채팅 채널이 설정되지 않았다")
+
+    async def _forum_webhook(self, project: str) -> discord.Webhook:
+        for forum_id, key in self.forums.items():
+            if key == project:
+                return self._webhooks[forum_id]
+        raise RuntimeError(f"{project}의 포럼 웹훅이 없다")
 
     async def _webhook_for(self, thread_id: int) -> discord.Webhook:
         thread = self.get_channel(thread_id) or await self.fetch_channel(thread_id)
@@ -204,19 +338,24 @@ class ZeroSyncBot(discord.Client):
             channel_id=message.channel.id,
             parent_id=getattr(message.channel, "parent_id", None),
         )
-        kind = classify(incoming, zero_user_id=self.zero_user_id, forum_ids=self.forums)
+        kind = classify(
+            incoming, zero_user_id=self.zero_user_id, forum_ids=self.forums, chat_ids=self.chats
+        )
         if kind is MessageKind.IGNORE:
             return
-        assert incoming.parent_id is not None
-        thread = str(message.channel.id)
-        if kind is MessageKind.POST:
-            project = self.forums[incoming.parent_id]
-            title = getattr(message.channel, "name", "")
+        if kind is MessageKind.CHAT:
+            project = self.chats[incoming.channel_id]
             text = message.content.strip() or EMPTY_POST
             self.spawn(
-                self.engine.on_post(project=project, thread=thread, title=title, text=text),
-                f"게시글 {thread}",
+                self.engine.on_chat(project, text, message_id=str(message.id)),
+                f"채팅 {message.id}",
             )
+            return
+        thread = str(message.channel.id)
+        if kind is MessageKind.POST:
+            # 일은 제품 채팅 채널의 /task로 시작한다 (ADR-007). 직접 연 포스트는 안내만 한다
+            if await self.repo.find_task_by_thread(thread) is None:
+                await self.chat.post(thread, "bot", POST_HINT)
         else:
             self.spawn(
                 self.engine.on_message(thread, message.content, message_id=str(message.id)),
@@ -245,6 +384,57 @@ class ZeroSyncBot(discord.Client):
         await interaction.response.send_message(echo, silent=True)
         self.spawn(self.engine.on_command(thread, name, arg), echo)
 
+    def _chat_project(self, interaction: discord.Interaction) -> tuple[str | None, str | None]:
+        error = chat_command_error(
+            user_id=interaction.user.id,
+            zero_user_id=self.zero_user_id,
+            channel_id=interaction.channel_id or 0,
+            chat_ids=self.chats,
+        )
+        if error is not None:
+            return None, error
+        return self.chats[interaction.channel_id or 0], None
+
+    async def run_task(self, interaction: discord.Interaction, command: str, title: str) -> None:
+        """/task feature|bug, /release: 포럼 포스트를 열고 흐름을 시작한다 (ADR-007)."""
+        project, error = self._chat_project(interaction)
+        if error is None and not title.strip():
+            error = "제목을 적는다."
+        if error is None and self.engine.pipeline_for_command(command) is None:
+            error = f"{command}로 시작하는 흐름이 회사 설정에 없다."
+        if error is not None or project is None:
+            await interaction.response.send_message(error, ephemeral=True)
+            return
+        echo = f"{command} {title}".strip()
+        await interaction.response.send_message(echo, silent=True)
+        self.spawn(self.engine.task_from_chat(project, command, title.strip()), echo)
+
+    async def run_debate(self, interaction: discord.Interaction) -> None:
+        project, error = self._chat_project(interaction)
+        if error is not None or project is None:
+            await interaction.response.send_message(error, ephemeral=True)
+            return
+        await interaction.response.send_message("/debate", silent=True)
+
+        async def debate() -> None:
+            problem = await self.engine.debate(project)
+            if problem:
+                await self.chat.chat(project, "bot", problem)
+
+        self.spawn(debate(), "/debate")
+
+    async def run_idea(self, interaction: discord.Interaction, text: str) -> None:
+        project, error = self._chat_project(interaction)
+        if error is None and not text.strip():
+            error = "아이디어 내용을 적는다."
+        if error is not None or project is None:
+            await interaction.response.send_message(error, ephemeral=True)
+            return
+        number = await self.engine.add_idea(project, text)
+        await interaction.response.send_message(
+            f"아이디어 #{number}로 기록했다: {text.strip()}", silent=True
+        )
+
     async def show_status(self, interaction: discord.Interaction) -> None:
         error = command_error(
             user_id=interaction.user.id,
@@ -266,8 +456,26 @@ class ZeroSyncBot(discord.Client):
             return
         running = await self.repo.list_running_agent_runs()
         active = await self.repo.list_tasks(ACTIVE_STATES)
-        text = render_ping(running_cli=len(running), active_tasks=len(active))
+        paused = await self.repo.get_state(PAUSE_KEY) or ""
+        text = render_ping(
+            running_cli=len(running),
+            active_tasks=len(active),
+            waiting=self.engine.waiting,
+            paused=paused,
+        )
         await interaction.response.send_message(text, ephemeral=True)
+
+    async def run_hire(
+        self, interaction: discord.Interaction, *, accept: bool, number: int, note: str
+    ) -> None:
+        """팀장의 채용 제안에 답한다 (운영 규약 1.12). 어느 채널에서든 Zero만 쓸 수 있다."""
+        if interaction.user.id != self.zero_user_id:
+            await interaction.response.send_message(
+                "이 봇의 명령은 Zero만 쓸 수 있다.", ephemeral=True
+            )
+            return
+        text = await self.engine.decide_hiring(number, accept=accept, note=note)
+        await interaction.response.send_message(text, silent=True)
 
     # 백그라운드 실행
 
@@ -293,31 +501,55 @@ class ZeroSyncBot(discord.Client):
 def _register_commands(bot: ZeroSyncBot) -> None:
     tree, guild = bot.tree, bot.guild_ref
 
-    @tree.command(name="debate", description="두 에이전트가 서로의 의견에 반박 1회", guild=guild)
-    async def debate(interaction: discord.Interaction) -> None:
-        await bot.run_command(interaction, CommandName.DEBATE)
-
-    @tree.command(name="decide", description="방향을 확정하고 다음 단계로 넘어간다", guild=guild)
-    @app_commands.rename(direction="방향")
-    @app_commands.describe(direction="확정할 방향")
-    async def decide(interaction: discord.Interaction, direction: str) -> None:
-        await bot.run_command(interaction, CommandName.DECIDE, direction)
+    # 제품 채팅 채널 (ADR-007)
 
     @tree.command(
-        name="stop", description="작업을 멈추고 실행 중인 에이전트를 종료한다", guild=guild
+        name="task", description="채팅의 의견을 포럼 포스트로 옮겨 일을 시작한다", guild=guild
     )
-    async def stop(interaction: discord.Interaction) -> None:
-        await bot.run_command(interaction, CommandName.STOP)
+    @app_commands.rename(kind="종류", title="제목")
+    @app_commands.describe(kind="기능 개발 또는 버그 수정", title="작업 제목")
+    @app_commands.choices(
+        kind=[
+            app_commands.Choice(name="기능 개발", value="feature"),
+            app_commands.Choice(name="버그 수정", value="bug"),
+        ]
+    )
+    async def task(
+        interaction: discord.Interaction, kind: app_commands.Choice[str], title: str
+    ) -> None:
+        await bot.run_task(interaction, f"/task {kind.value}", title)
 
-    @tree.command(name="approve", description="설계를 승인하고 구현을 시작한다", guild=guild)
+    @tree.command(name="release", description="출시 준비를 시작한다", guild=guild)
+    @app_commands.rename(version="버전")
+    @app_commands.describe(version="예: 1.0.0")
+    async def release(interaction: discord.Interaction, version: str) -> None:
+        await bot.run_task(interaction, "/release", version)
+
+    @tree.command(name="debate", description="직전에 답한 두 팀장이 서로 반박 1회", guild=guild)
+    async def debate(interaction: discord.Interaction) -> None:
+        await bot.run_debate(interaction)
+
+    @tree.command(name="idea", description="바로 하지 않을 아이디어를 기록한다", guild=guild)
+    @app_commands.rename(text="내용")
+    @app_commands.describe(text="아이디어")
+    async def idea(interaction: discord.Interaction, text: str) -> None:
+        await bot.run_idea(interaction, text)
+
+    # 포럼 포스트 안의 진행 명령
+
+    @tree.command(name="approve", description="산출물을 승인하고 다음 단계로 간다", guild=guild)
     async def approve(interaction: discord.Interaction) -> None:
         await bot.run_command(interaction, CommandName.APPROVE)
 
-    @tree.command(name="revise", description="설계를 고쳐 달라고 요청한다", guild=guild)
+    @tree.command(name="revise", description="산출물을 고쳐 달라고 요청한다", guild=guild)
     @app_commands.rename(request="요청")
     @app_commands.describe(request="고칠 내용")
     async def revise(interaction: discord.Interaction, request: str) -> None:
         await bot.run_command(interaction, CommandName.REVISE, request)
+
+    @tree.command(name="skip", description="문서 반영을 건너뛴다", guild=guild)
+    async def skip(interaction: discord.Interaction) -> None:
+        await bot.run_command(interaction, CommandName.SKIP)
 
     @tree.command(name="fix", description="merge 전에 [권장] 지적을 1회 반영한다", guild=guild)
     async def fix(interaction: discord.Interaction) -> None:
@@ -326,6 +558,31 @@ def _register_commands(bot: ZeroSyncBot) -> None:
     @tree.command(name="resume", description="확인 필요 상태에서 직전 단계로 재개한다", guild=guild)
     async def resume(interaction: discord.Interaction) -> None:
         await bot.run_command(interaction, CommandName.RESUME)
+
+    @tree.command(
+        name="stop", description="작업을 멈추고 실행 중인 에이전트를 종료한다", guild=guild
+    )
+    async def stop(interaction: discord.Interaction) -> None:
+        await bot.run_command(interaction, CommandName.STOP)
+
+    @tree.command(name="hire", description="팀장의 채용 제안에 답한다", guild=guild)
+    @app_commands.rename(decision="결정", number="번호", note="메모")
+    @app_commands.describe(
+        decision="수락 또는 거절", number="채용 제안 번호", note="거절 이유 (다음 제안에 반영)"
+    )
+    @app_commands.choices(
+        decision=[
+            app_commands.Choice(name="수락", value="accept"),
+            app_commands.Choice(name="거절", value="reject"),
+        ]
+    )
+    async def hire(
+        interaction: discord.Interaction,
+        decision: app_commands.Choice[str],
+        number: int,
+        note: str = "",
+    ) -> None:
+        await bot.run_hire(interaction, accept=decision.value == "accept", number=number, note=note)
 
     @tree.command(name="status", description="이 작업의 상태와 진행 횟수", guild=guild)
     async def status(interaction: discord.Interaction) -> None:
@@ -346,7 +603,7 @@ async def run_bot(config: Config) -> None:
     conn = await connect(config.paths.db)
     try:
         process = ProcessRunner(config.paths.runs)
-        runners: dict[AgentName, AgentRunner] = {
+        runners: dict[EngineName, AgentRunner] = {
             "claude": ClaudeCliRunner(process, config.cli.claude, config.cli.claude_models),
             "codex": CodexCliRunner(process, config.cli.codex, config.cli.codex_models),
         }

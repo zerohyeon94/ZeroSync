@@ -1,9 +1,9 @@
 # ZeroSync v2 봇 설계서 (SPEC)
 
-> 작성: 2026-09-30 (claude.ai 초안) | 갱신: 2026-10-28 (ADR-007 회사 재정의 반영) | 상태: Phase 2 구현, Phase 3 설계 중
+> 작성: 2026-09-30 (claude.ai 초안) | 갱신: 2026-10-28 (ADR-007 회사 재정의 반영) | 상태: Phase 3~7 구현 (`feat/0-company-system`), Phase 8 미정
 > 상위 문서: [운영 규약](운영-규약.md). **이 문서와 운영 규약이 다르면 운영 규약을 따른다.**
 > 관련: [ADR-005](아키텍처%20결정/ADR-005-Discord-오케스트레이터-전환.md), [ADR-006](아키텍처%20결정/ADR-006-회사형-구조.md), [ADR-007](아키텍처%20결정/ADR-007-회사-재정의.md), [회사 재정의 문서](회사/README.md), [AGENTS.md](../AGENTS.md)
-> 구현 상태 주의: 지금 코드(Phase 2)는 ADR-005 기준이다 (포럼 의견 단계, Beta 설계·구현, Alpha·Codex 리뷰, 고정 상태 머신). 이 문서의 팀 구조, 채팅, 파이프라인 선언, 일정·보고는 Phase 3 이후 구현한다 (12장)
+> 구현 상태: 팀 구조, 제품 채팅 채널, 파이프라인 선언(기능 개발·버그 수정·출시·정기 테스트), 일정·보고는 `feat/0-company-system`에서 구현했다 (12장). 실제 Discord 서버 확인은 아직이다. v6 이전에 시작한 작업은 `legacy` 흐름(ADR-005 단계를 새 역할로)으로 이어 간다
 
 ---
 
@@ -105,16 +105,16 @@ launchd (LaunchAgent, 로그인 사용자 세션)
 
 작업(task)은 Zero가 제품 채팅 채널에서 `/task`·`/release`를 쓰거나 일정(6.6)이 요청을 넣는 순간 생성된다. 봇은 그 제품의 포럼에 포스트를 열고 채팅의 의견 요약을 첫머리에 옮긴다. 첫 상태는 파이프라인 선언의 첫 단계다 (기능 개발은 `PLANNING`).
 
-- ADR-005 기준의 `OPINIONS` 상태는 없어진다. 의견은 제품 채팅 채널의 대화(상태 머신 없음, 6.1)에서 나누고, `/task`가 `/decide`를 대신한다 (ADR-007). 지금 코드의 OPINIONS는 Phase 5에서 바꾼다
+- ADR-005 기준의 `OPINIONS` 상태는 없어진다. 의견은 제품 채팅 채널의 대화(상태 머신 없음, 6.1)에서 나누고, `/task`가 `/decide`를 대신한다 (ADR-007). enum 값은 옛 기록을 읽기 위해 남긴다
 - ADR-005 기준의 `DESIGNING`(Beta 설계) → `AWAIT_DESIGN_APPROVAL` 흐름은 `PLANNING`(Beta 기획) → `AWAIT_PLAN_APPROVAL` → (`UI_DESIGNING`(Gamma) → `AWAIT_UI_APPROVAL`) → `DESIGNING`(Alpha 기술 설계)로 바뀐다. Q3("설계 승인은 항상 `/approve`")의 승인 지점은 기획 승인과 화면 디자인 승인으로 옮긴다 (2026-10-26, 2026-10-28 Zero 결정)
 
-### 3.1-1 다른 파이프라인의 상태 [제안] (ADR-007)
+### 3.1-1 다른 파이프라인의 상태 [확정] (ADR-007, 구현)
 
 | 파이프라인 | 상태 순서 |
 |---|---|
-| 버그 수정 (`bugfix.yaml`) | `DIAGNOSING`(Delta, 읽기 전용) → `AWAIT_FIX_APPROVAL` → `IMPLEMENTING`(Alpha) → `TESTING` → `REVIEWING`(Delta) ⇄ `FIXING` → `AWAIT_MERGE` → `DONE`. 문서 반영은 Zero가 `/doc`으로 요청할 때만 |
+| 버그 수정 (`bugfix.yaml`) | `DIAGNOSING`(Delta, 읽기 전용) → `AWAIT_FIX_APPROVAL` → `IMPLEMENTING`(Alpha) → `TESTING` → `REVIEWING`(Delta) ⇄ `FIXING` → `AWAIT_MERGE` → `DONE`. 문서 반영은 하지 않는다. 기능 정의서를 고칠 일이면 `/task feature`로 연다. 작업 브랜치와 Issue 제목은 진단의 변경 필드(change_type, slug 등)로 만든다 |
 | 출시 (`release.yaml`) | `TESTING`(전체 테스트·빌드) → `RELEASE_PREPARING`(Beta, 배포 겸임) → `AWAIT_RELEASE_APPROVAL` → `/approve`로 `DONE`. 스토어 제출은 승인 뒤 Zero가 직접 한다 |
-| 정기 테스트 (`nightly-test.yaml`) | `TESTING` → 통과면 `DONE`(Discord 알림 없음). 실패면 `DIAGNOSING`(Delta) → 포럼에 보고 포스트(`확인필요` 태그) → `DONE`. 수정은 Zero가 `/task bug`로 시작한다. 같은 실패가 이어지면 기존 보고 포스트에 덧붙인다 |
+| 정기 테스트 (`nightly-test.yaml`) | `TESTING` → 통과면 `DONE`(Discord 알림 없음). 실패면 `DIAGNOSING`(Delta) → 포럼에 보고 포스트(`확인필요` 태그) → `DONE`. 수정은 Zero가 `/task bug`로 시작한다. 실행 중에는 `sched:` 가짜 스레드를 쓰고 보고할 때 실제 포스트를 연다. [미구현] 같은 실패를 기존 보고 포스트에 덧붙이기, `확인필요` 태그 |
 
 - 기획이 없는 파이프라인(버그 수정)은 진단 뒤 `gate`를 둔다 (3.5 규칙 R2)
 
@@ -259,7 +259,7 @@ budget: {max_calls: 3, max_minutes: 30}
 ```
 
 - `when`은 앞 단계 출력 JSON의 정해진 불리언 필드(`has_ui_change`)나 봇이 아는 결과(`test_failed`)만 받는다. 봇은 조건을 해석하지 않고 값을 읽을 뿐이다 [제안]
-- 채팅의 대화는 파이프라인이 아니다. 아무도 부르지 않았을 때 답할 팀장은 회사 설정의 제품 채널 설정(`chat_default: [beta, alpha]`)에 둔다 (6.1, 9.1-1)
+- 채팅의 대화는 파이프라인이 아니다. 아무도 부르지 않았을 때 답할 팀장은 회사 설정의 제품 채널 설정(`chat_default: [beta, alpha]`)에 둔다 (6.1, 9.1-1). 구현은 제품별이 아니라 `org.yaml`의 `roles.opinions` 하나를 모든 제품에 쓴다
 
 단계 종류 [제안]
 
@@ -290,7 +290,8 @@ budget: {max_calls: 3, max_minutes: 30}
 | R5 | `triggers`의 출처는 6.5·6.6에서 정의한 값(`discord_task`, `schedule`)이다. 입력 계층은 여기 적힌 파이프라인만 받는다 |
 
 - R1은 리뷰를 Delta가 맡으면서 지켜진다. 2026-10-26판 예시는 기획과 리뷰를 모두 Beta에게 두어 R1과 충돌했다 (ADR-007에서 정리)
-- 지금 코드의 고정 상태 머신은 Phase 5에서 `pipelines/feature.yaml`로 옮긴다. 옮긴 뒤에도 전이 규칙은 순수 함수로 두고, 파이프라인 선언을 입력으로 받는다 (3.4)
+- 상태 머신은 파이프라인 선언을 입력으로 받는 순수 함수다 (`bot/workflow/state.py`, 3.4). 선언은 회사 저장소 `pipelines/*.yaml`에서 읽고, 폴더가 없으면 코드의 기본 선언(`bot/pipeline.py` `default_pipelines`)을 쓴다
+- 추가 규칙(구현): 각 단계 종류(`gate` 제외)는 흐름마다 한 번만 쓴다. `gate`는 기획·화면 디자인·설계·진단·출시 준비 바로 뒤에만 둔다
 
 ---
 
@@ -301,11 +302,10 @@ budget: {max_calls: 3, max_minutes: 30}
 | 명령 | 가능한 상태 | 동작 | 상태 |
 |---|---|---|---|
 | (제품 채팅 채널에 메시지) | - | 대화. `@beta`처럼 `@이름`으로 시작하면 그 팀장만, 아니면 제품 채널의 `chat_default`(Beta, Alpha)가 답한다. 상태 머신 없음 | [확정] (ADR-007) |
-| `/debate` | 제품 채팅 채널 | 직전에 답한 두 팀장이 상대 답에 반박 1회씩 | [제안] |
+| `/debate` | 제품 채팅 채널 | 직전에 답한 두 팀장이 상대 답에 반박 1회씩 | [확정] (구현) |
 | `/task <feature\|bug> <제목>` | 제품 채팅 채널 | 그 제품 포럼에 포스트를 열고 파이프라인 시작. 채팅의 의견 요약을 첫머리에 옮긴다. ADR-005의 `/decide`를 대신한다 | [확정] (ADR-007) |
 | `/release <버전>` | 제품 채팅 채널 | 출시 파이프라인 시작 | [확정] (ADR-007) |
 | `/idea <내용>` | 제품 채팅 채널 | 그 제품의 아이디어 목록에 기록. 포스트를 열지 않는다 | [확정] (ADR-007) |
-| `/doc` | 버그 수정의 AWAIT_MERGE | merge 뒤 문서 반영(doc_sync)을 이어서 하도록 표시 | [제안] |
 | `/approve` | `gate` 대기 상태(AWAIT_PLAN_APPROVAL 등), AWAIT_DOC_APPROVAL | 현재 단계 승인 | [확정] |
 | `/revise <요청>` | `gate` 대기 상태, AWAIT_DOC_APPROVAL | 앞 단계 산출물 다시 작성 | [확정] (Q7, 기획 단계로 이동) |
 | `/skip` | AWAIT_DOC_APPROVAL | 기능 정의서 반영 생략 | [확정] |
@@ -542,13 +542,13 @@ Discord 채팅의 대화 ──────────────────�
 
 ## 7. 모듈 구조
 
-현재 develop에 있는 것은 `bot/__main__.py`(골격), `bot/schemas/`(구현), `bot/agents/`(인터페이스·프로세스 실행·가짜 러너·Claude·Codex CLI 러너), `bot/clock.py`, `bot/store/`(SQLite 스키마 v2·저장소), `bot/workflow/`(상태 enum과 Phase 1·2 전이, ChatIO 인터페이스, 멘션 규칙, 엔진 `engine.py`, 설계~merge 단계 작업 `work.py`), `bot/prompts/`(의견·반박·설계·구현·수정·리뷰), `bot/render/`(의견·안내·Issue·설계·테스트·리뷰·PR 본문), `bot/github/`(push 보호·커밋 메시지 규칙, GitOps, GitHubClient), `bot/testrun.py`, `bot/dashboard/`, `bot/config.py`(설정 로더), `bot/locks.py`(단일 인스턴스 락), `bot/discord_io/`(규칙, `DiscordChat`, 클라이언트)다. `bot/__main__.py`는 설정 → 락 → DB → 러너 → 엔진 → Discord 순으로 연결한다. 아래는 목표 구조다 [제안].
+`feat/0-company-system` 기준 구조다. `bot/__main__.py`는 설정 → 락 → DB → 러너 → 엔진 → Discord 순으로 연결한다. 목표 구조에서 따로 두려던 `org/`·`intake/`·`budget.py`·`pipeline/`은 파일 하나씩(`org.py`, 엔진의 `AgentGate`, 엔진의 예산 검사, `pipeline.py`)으로 구현했다.
 
 ```
 bot/
   __main__.py          # 진입점: 설정 로드, 단일 인스턴스 락, 이벤트 루프 시작
   config.py            # projects.yaml + .env 로더 (pydantic 모델)
-  schemas/             # 에이전트 출력 스키마 (구현됨: opinion, review, design 일부, extract)
+  schemas/             # 에이전트 출력 스키마 (의견, 리뷰, 설계, 기획·화면 디자인·진단·출시 준비·문서 반영)
   prompts/             # 단계별 프롬프트 템플릿 (.md)
   agents/
     base.py            # AgentRunner, AgentRequest, AgentResult
@@ -556,24 +556,24 @@ bot/
     claude.py          # ClaudeCliRunner
     codex.py           # CodexCliRunner
     fake.py            # 테스트용 FakeAgentRunner
-  org/                 # org.yaml·인격 파일 로더, 에이전트 → 엔진 러너 선택 (Phase 3) [제안]
-  intake/              # 요청 형식, 대기열과 우선순위, 한 번에 하나 실행 (Phase 4) [제안]
-  scheduler.py         # 내장 일정(아침·주간 보고)과 파이프라인 schedule, 놓친 실행 따라잡기 (Phase 4) [제안]
-  reports.py           # 아침·주간 보고 만들기 (DB에서, 에이전트 호출 없음) (Phase 4) [제안]
-  budget.py            # 예산 집계와 상한 검사, 사용량 한도 정지 (Phase 4, 파이프라인 예산은 Phase 5) [제안]
-  pipeline/            # 파이프라인 YAML 로더, 규칙 검사 R1~R5, `when` 조건 (Phase 5) [제안]
+  org.py               # org.yaml·인격 파일 로더, 에이전트 → 엔진 러너 선택
+  scheduler.py         # 내장 일정(아침·주간 보고)과 파이프라인 schedule, 놓친 실행 따라잡기
+  reports.py           # 아침·주간 보고 만들기 (DB에서, 에이전트 호출 없음)
+  pipeline.py          # 파이프라인 YAML 로더, 규칙 검사 R1~R5, `when` 조건, 기본 선언과 legacy 흐름
   workflow/
     state.py           # 상태 enum, 이벤트, 전이 규칙 (순수 함수)
-    engine.py          # 효과 실행, 한도 관리
+    engine.py          # 효과 실행, 예산·사용량 한도, 채팅 대화
+    gate.py            # AgentGate: 에이전트 실행 대기열 (우선순위, 동시 실행 수)
+    work.py            # 단계별 작업 (기획~문서 반영, 보고)
     chat.py            # ChatIO 인터페이스, 테스트용 FakeChatIO
     mentions.py        # ACTION_REQUIRED 집합, 재멘션 판정
   store/
     db.py              # SQLite 연결, 마이그레이션
-    repo.py            # tasks, events, agent_runs 접근
+    repo.py            # tasks, events, agent_runs, chat_turns, ideas, hiring 접근
   render/              # 스키마 → Discord·Issue·PR·볼트 텍스트
   discord_io/          # ChatIO 구현, 슬래시 명령, 웹훅
-  github/              # GitHubClient(gh), GitOps(git)
-  vault/               # 결정 노트, 논의 목록, DOC_SYNC 쓰기
+  github/              # GitHubClient(gh), GitOps(git), VaultGit(볼트 커밋)
+  # 볼트 쓰기(DOC_SYNC)는 work.py가 허용 경로에만 하고 VaultGit으로 커밋한다. 결정 노트·논의 목록은 [미구현]
   testrun.py           # 테스트 명령 실행과 결과 요약
   locks.py             # 전역 빌드 락, 작업별 실행 락
   clock.py             # 현재 시각 (테스트에서 고정)
@@ -878,7 +878,7 @@ products:
 
 ### 9.3 실행
 - 개발: `tmux` 안에서 `caffeinate -is python -m bot`
-- 운영: `deploy/com.zerosync.orchestrator.plist`를 `~/Library/LaunchAgents/`에 두고 `launchctl bootstrap gui/$(id -u) <plist>`. `RunAtLoad`, `KeepAlive`, 로그 경로, PATH 지정
+- 운영: `scripts/install_launchd.sh`가 `deploy/com.zerosync.orchestrator.plist` 템플릿의 저장소·홈 경로를 채워 `~/Library/LaunchAgents/`에 두고 `launchctl bootstrap gui/$(id -u) <plist>`한다. `--uninstall`로 해제. `RunAtLoad`, 비정상 종료 때만 재시작(`KeepAlive.SuccessfulExit=false`, 60초 간격), 로그 `~/.zerosync/bot.{out,err}.log`, Homebrew PATH (2026-10-28 구현)
 - LaunchDaemon(root)으로 실행하지 않는다. CLI 구독 로그인이 사용자 계정에 있기 때문이다
 - 운영 맥: 전원 상시 연결, 시스템 잠자기 방지, 상시 켜 두는 맥 한 대에서만 실행
 
@@ -999,17 +999,17 @@ Zero가 회사 재정의 1~5단계([docs/회사/](회사/README.md))에서 정�
 | 0 | 문서 정비: 운영 규약, ADR-005, AGENTS.md, 스키마, SPEC.md | 완료 |
 | 1 | MVP: 포럼 게시글 감지 → Beta·Alpha 의견 병렬 게시 | 완료 (2026-10-11 실제 서버에서 한 사이클 확인) |
 | 2 | 워크플로 (ADR-005 기준): 상태 머신 전체, 승인 명령, 리뷰 루프, 테스트 실행, Issue·PR, /stop | 구현 (`feat/0-phase2-workflow`). 2026-10-28 가게씨 실제 사이클(작업 5, Issue #34)로 의견·결정·Issue·설계·승인·구현·worktree·push를 확인. 테스트 실행 이후(리뷰, draft PR, merge 감지)는 맥의 시뮬레이터 설치 뒤 `/resume`으로 확인한다. 테스트 환경 오류를 NEEDS_HUMAN으로 보내는 수정 포함 |
-| 3 | 조직: 비공개 회사 저장소 경로, `org.yaml`(부서·팀·에이전트)·인격 파일 로더, Beta·Gamma·Alpha·Delta, 에이전트별 엔진·모델(모두 Claude), 표시 이름 `[이름 · 직책]`, 리뷰 담당을 Delta(새 세션·읽기 전용)로, `hiring_proposal`·`/hire` | 미시작 |
-| 4 | 운영화: launchd, 요청 대기열(우선순위, 동시 실행 1개), 일정 실행기, `#대표실` 아침·주간 보고, 팀장별 일일 예산, 사용량 한도 정지(V15), 재멘션, 대시보드 확장(9.3-1) | 미시작 |
-| 5 | 채팅과 기능 개발 흐름: 제품 채팅 채널과 대화, `/task`·`/debate`·`/idea` 입력, 파이프라인 YAML 로더와 규칙 검사(R1~R5, `when`), 기능 개발을 `pipelines/feature.yaml`로 이전(PLANNING, 화면 디자인, Alpha 설계·구현, Delta 검증), Claude 디자인 확인(V14), 흐름별 예산, 볼트·DOC_SYNC | 미시작 |
-| 6 | 버그 수정·출시 흐름(진단, 수정 방향 승인, 출시 준비)과 가게씨 안정화·첫 출시 준비 | 미시작 |
-| 7 | 정기 테스트(제품별 일정, 실패 진단·보고), 아이디어 관리 화면, 제이데이·오롯 적용 | 미시작 |
+| 3 | 조직: 비공개 회사 저장소 경로, `org.yaml`(부서·팀·에이전트)·인격 파일 로더, Beta·Gamma·Alpha·Delta, 에이전트별 엔진·모델(모두 Claude), 표시 이름 `[이름 · 직책]`, 리뷰 담당을 Delta(새 세션·읽기 전용)로, `hiring_proposal`·`/hire` | 구현 (2026-10-28, `feat/0-company-system`) |
+| 4 | 운영화: launchd, 요청 대기열(우선순위, 동시 실행 1개), 일정 실행기, `#대표실` 아침·주간 보고, 팀장별 일일 예산, 사용량 한도 정지(V15), 재멘션, 대시보드 확장(9.3-1) | 구현 (2026-10-28, `feat/0-company-system`). 대기열은 에이전트 실행 단위(AgentGate). 사용량 한도 판정 문구는 V15 확인 전 추정 |
+| 5 | 채팅과 기능 개발 흐름: 제품 채팅 채널과 대화, `/task`·`/debate`·`/idea` 입력, 파이프라인 YAML 로더와 규칙 검사(R1~R5, `when`), 기능 개발을 `pipelines/feature.yaml`로 이전(PLANNING, 화면 디자인, Alpha 설계·구현, Delta 검증), Claude 디자인 확인(V14), 흐름별 예산, 볼트·DOC_SYNC | 구현 (2026-10-28, `feat/0-company-system`). 파이프라인은 YAML이 없으면 코드의 기본 선언을 쓴다. 볼트가 git이면 봇이 쓴 파일만 커밋(push 없음). V14는 화면 디자인 결과에 `design_url`을 받는 데까지 |
+| 6 | 버그 수정·출시 흐름(진단, 수정 방향 승인, 출시 준비)과 가게씨 안정화·첫 출시 준비 | 흐름 구현 (2026-10-28, `feat/0-company-system`). 가게씨 적용은 시뮬레이터 설치(V9) 뒤 |
+| 7 | 정기 테스트(제품별 일정, 실패 진단·보고), 아이디어 관리 화면, 제이데이·오롯 적용 | 정기 테스트·아이디어 화면 구현 (2026-10-28, `feat/0-company-system`). 제이데이·오롯 적용, 같은 실패 묶기는 남음 |
 | 8 | 교육·비서 부서: 회사 재정의 1~5단계를 두 부서에 대해 다시 하고 구현 | 미시작 |
 
 - 2026-10-26판 계획의 Phase 6(입력·일정: 접수 명령, Jenkins·SSH, Slack 어댑터)은 ADR-007로 대부분 빠지고, 대기열과 일정만 Phase 4로 옮겼다
 - 빌드 락(테스트 전역 락)과 `/ping`은 Phase 1~2에서 구현했다
 - 순서 근거: 조직(3)이 있어야 에이전트별 예산·표시 이름이 생긴다. 운영화(4)를 흐름보다 먼저 해 매일 쓰는 바탕(상시 실행, 보고, 대시보드)을 갖춘다 (Zero 결정). 흐름은 3단계에서 정한 순서(대화 → 기능 개발 → 버그 수정 → 출시 → 정기 테스트 → 아이디어 관리)로 5~7에 놓는다. 이 순서 때문에 가게씨 버그 수정·출시 흐름은 Phase 6이다 (ADR-007 트레이드오프)
-- 각 Phase는 develop에서 브랜치 하나를 만들어 완료 때 PR을 한 번 연다 (AGENTS.md)
+- Phase 3~7은 Zero 결정(2026-10-28)으로 `feat/0-company-system` 한 브랜치에 Phase별 커밋으로 모아 PR을 한 번 연다
 
 ### 12.2 Phase 1 스레드 분할 [제안]
 각 스레드는 develop에서 브랜치를 만들고 draft PR 하나로 끝낸다. 시작 전 범위를 제안하고 Zero의 승인을 받는다.

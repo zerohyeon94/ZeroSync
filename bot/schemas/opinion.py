@@ -1,6 +1,6 @@
 """의견 스키마 (운영 규약 2.2).
 
-OPINIONS·DEBATE 단계에서 Beta(Claude)와 Alpha(Codex)가 출력하는 형식이다.
+의견·반박에서 팀장이 출력하는 형식이다 (채팅 답 포함).
 """
 
 from enum import StrEnum
@@ -9,6 +9,7 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from bot.schemas._types import Item
+from bot.schemas.hiring import HiringProposal
 
 # 결론은 한 줄 (줄바꿈 금지)
 Conclusion = Annotated[
@@ -46,3 +47,5 @@ class Opinion(BaseModel):
     # 찬성이어도 위험은 최소 1개 (AI가 찬성 시 단점을 생략하는 경향 방지)
     risks: list[Item] = Field(min_length=1, max_length=3)
     proposal: Proposal
+    # 채용 제안 (운영 규약 1.12). 근거가 있을 때만 붙인다
+    hiring_proposal: HiringProposal | None = None

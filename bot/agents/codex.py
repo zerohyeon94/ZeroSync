@@ -14,12 +14,12 @@ import json
 from collections.abc import Mapping
 from pathlib import Path
 
-from bot.agents.base import AgentName, AgentRequest, AgentResult, Stage
+from bot.agents.base import AgentRequest, AgentResult, EngineName, Stage
 from bot.agents.process import ProcessRunner
 
 
 class CodexCliRunner:
-    name: AgentName = "codex"
+    name: EngineName = "codex"
 
     def __init__(
         self,
@@ -54,7 +54,7 @@ class CodexCliRunner:
             "--output-last-message",
             str(self.last_message_path(request.run_id)),
         ]
-        if model := self._models.get(request.stage):
+        if model := request.model or self._models.get(request.stage):
             argv += ["--model", model]
         if request.output_schema is not None:
             argv += ["--output-schema", str(self.schema_path(request.run_id))]

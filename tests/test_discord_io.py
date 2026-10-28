@@ -12,15 +12,17 @@ import pytest
 
 from bot.config import load_config
 from bot.discord_io.chat import DiscordChat
-from bot.discord_io.client import EMPTY_POST, ZeroSyncBot, project_contexts
+from bot.discord_io.client import POST_HINT, ZeroSyncBot, project_contexts
 from bot.discord_io.rules import (
-    AUTHOR_NAMES,
     IncomingMessage,
     MessageKind,
+    author_name,
+    chat_command_error,
     classify,
     command_error,
     split_text,
 )
+from bot.org import DEFAULT_ORG
 from bot.render.status import render_ping, render_status
 from bot.store.repo import TaskRecord
 from bot.workflow.chat import Attachment
@@ -29,6 +31,7 @@ from bot.workflow.state import CommandName, TaskState
 ZERO = 42
 FORUM = 100
 OPS = 300
+CHAT = 600
 
 
 def run(coro):
@@ -59,18 +62,28 @@ def message(**overrides):
         ({"from_bot": True}, MessageKind.IGNORE),  # 봇·웹훅 (자기 게시 반복 방지)
         ({"parent_id": 999}, MessageKind.IGNORE),  # 등록되지 않은 포럼
         ({"parent_id": None}, MessageKind.IGNORE),  # 스레드가 아닌 채널
+        ({"parent_id": None, "channel_id": CHAT}, MessageKind.CHAT),  # 제품 채팅 채널
+        ({"parent_id": None, "channel_id": CHAT, "author_id": 7}, MessageKind.IGNORE),
     ],
 )
 def test_classify(overrides, expected):
-    assert classify(message(**overrides), zero_user_id=ZERO, forum_ids={FORUM}) is expected
+    kind = classify(message(**overrides), zero_user_id=ZERO, forum_ids={FORUM}, chat_ids={CHAT})
+    assert kind is expected
 
 
 def test_command_error():
     ok = {"zero_user_id": ZERO, "forum_ids": {FORUM}}
     assert command_error(user_id=ZERO, parent_id=FORUM, **ok) is None
     assert "Zero만" in command_error(user_id=7, parent_id=FORUM, **ok)
-    assert "포럼의 게시글 안에서만" in command_error(user_id=ZERO, parent_id=None, **ok)
-    assert "포럼의 게시글 안에서만" in command_error(user_id=ZERO, parent_id=999, **ok)
+    assert "포스트 안에서만" in command_error(user_id=ZERO, parent_id=None, **ok)
+    assert "포스트 안에서만" in command_error(user_id=ZERO, parent_id=999, **ok)
+
+
+def test_chat_command_error():
+    ok = {"zero_user_id": ZERO, "chat_ids": {CHAT}}
+    assert chat_command_error(user_id=ZERO, channel_id=CHAT, **ok) is None
+    assert "Zero만" in chat_command_error(user_id=7, channel_id=CHAT, **ok)
+    assert "채팅 채널에서만" in chat_command_error(user_id=ZERO, channel_id=FORUM, **ok)
 
 
 def test_split_text():
@@ -86,11 +99,16 @@ def test_split_text():
 
 
 def test_author_names_follow_operating_rules():
-    assert AUTHOR_NAMES == {
-        "claude": "[Beta · Claude]",
-        "codex": "[Alpha · Codex]",
-        "bot": "[ZeroSync]",
-    }
+    # 표시 이름은 `[이름 · 직책]` (운영 규약 1.2, SPEC Q16). 엔진은 드러나지 않는다
+    assert [author_name(DEFAULT_ORG, a) for a in ("beta", "gamma", "alpha", "delta", "bot")] == [
+        "[Beta · 기획팀장]",
+        "[Gamma · 디자인팀장]",
+        "[Alpha · 개발팀장]",
+        "[Delta · QA팀장]",
+        "[ZeroSync]",
+    ]
+    # ADR-005 기준 기록의 행위자
+    assert author_name(DEFAULT_ORG, "codex") == "[Alpha · Codex]"
 
 
 # DiscordChat
@@ -122,12 +140,12 @@ def make_chat():
 
 def test_post_silent_without_mention():
     chat, webhook, _, asked = make_chat()
-    message_id = run(chat.post("500", "codex", "의견"))
+    message_id = run(chat.post("500", "alpha", "의견"))
     assert message_id == "1001"
     assert asked == [500]
     ((content, kwargs),) = webhook.calls
     assert content == "의견"
-    assert kwargs["username"] == "[Alpha · Codex]"
+    assert kwargs["username"] == "[Alpha · 개발팀장]"
     assert kwargs["thread"].id == 500
     assert kwargs["silent"] is True
     assert kwargs["wait"] is True
@@ -139,7 +157,7 @@ def test_post_with_mention_splits_and_attaches_on_last():
     chat, webhook, _, _ = make_chat()
     text = "\n".join(["가" * 1000] * 3)
     message_id = run(
-        chat.post("500", "claude", text, mention=True, attachments=[Attachment("a.md", "전문")])
+        chat.post("500", "beta", text, mention=True, attachments=[Attachment("a.md", "전문")])
     )
     assert message_id == "1001"
     assert len(webhook.calls) == 3
@@ -192,7 +210,10 @@ def test_render_status_and_ping():
         "리뷰 라운드: 2\n테스트 재시도: 1\n마지막 변경 후: 2시간 5분"
     )
     assert render_ping(running_cli=1, active_tasks=2) == (
-        "살아 있다. 실행 중 CLI 1개, 진행 중 작업 2개."
+        "살아 있다. 실행 중 CLI 1개, 대기 0개, 진행 중 작업 2개."
+    )
+    assert "10-28 09:00까지 대기열을 멈췄다" in render_ping(
+        running_cli=0, active_tasks=0, waiting=3, paused="10-28 09:00"
     )
 
 
@@ -209,8 +230,9 @@ def bot(tmp_path):
         "    repo: /repo\n"
         "    github: owner/GagaeSsi\n"
         "    test: swift test\n"
+        f'    chat_channel_id: "{CHAT}"\n'
         "    vault_dir: d\n    vault_hub: h.md\n    vault_tag: brain/g\n    vault_slug: g\n"
-        "paths:\n  vault_projects: /vault\n",
+        "paths:\n  vault_projects: /vault\n  company: /nonexistent/zerosync-company\n",
         encoding="utf-8",
     )
     environ = {
@@ -230,14 +252,34 @@ def bot(tmp_path):
     calls = []
 
     class Engine:
-        async def on_post(self, **kwargs):
-            calls.append(("post", kwargs))
+        pipelines: dict = {}
+
+        def pipeline_for_command(self, command):
+            return object() if command in ("/task feature", "/task bug", "/release") else None
+
+        async def on_chat(self, project, text, *, message_id=None):
+            calls.append(("chat", project, text, message_id))
+
+        async def task_from_chat(self, project, command, title):
+            calls.append(("task", project, command, title))
+
+        async def debate(self, project):
+            calls.append(("debate", project))
+            return ""
+
+        async def add_idea(self, project, text):
+            calls.append(("idea", project, text))
+            return 7
 
         async def on_message(self, thread, text, *, message_id=None):
             calls.append(("message", thread, text, message_id))
 
         async def on_command(self, thread, name, arg=""):
             calls.append(("command", thread, name, arg))
+
+        async def decide_hiring(self, number, *, accept, note=""):
+            calls.append(("hire", number, accept, note))
+            return f"채용 제안 #{number} 기록"
 
     instance.engine = Engine()
     instance.calls = calls
@@ -257,21 +299,72 @@ async def drain(bot):
         await asyncio.gather(*bot._background)
 
 
-def test_forum_post_and_reply_reach_engine(bot):
+def test_forum_post_gets_hint_and_reply_reaches_engine(bot):
+    hints = []
+
+    async def post(thread, author, text, **kwargs):
+        hints.append((thread, author, text))
+
+    bot.chat.post = post
+
     async def main():
-        await bot.on_message(discord_message(message_id=500, content="  "))
+        # Zero가 포럼에 직접 연 포스트는 작업을 만들지 않고 안내한다 (ADR-007)
+        await bot.on_message(discord_message(message_id=700, channel_id=700, content="  "))
         await bot.on_message(discord_message(message_id=501, content="추가 질문"))
         await bot.on_message(discord_message(message_id=502, author_id=7))
         await drain(bot)
 
     run(main())
-    assert bot.calls == [
-        (
-            "post",
-            {"project": "gagaessi", "thread": "500", "title": "예산 배너", "text": EMPTY_POST},
-        ),
-        ("message", "500", "추가 질문", "501"),
-    ]
+    assert bot.calls == [("message", "500", "추가 질문", "501")]
+    assert hints == [("700", "bot", POST_HINT)]
+
+
+def test_chat_message_reaches_engine(bot):
+    chat = SimpleNamespace(id=CHAT, name="gagaessi-chat")
+    message = SimpleNamespace(
+        id=900,
+        channel=chat,
+        author=SimpleNamespace(id=ZERO, bot=False),
+        content="  배너 어때?  ",
+        webhook_id=None,
+    )
+
+    async def main():
+        await bot.on_message(message)
+        await drain(bot)
+
+    run(main())
+    assert bot.calls == [("chat", "gagaessi", "배너 어때?", "900")]
+
+
+def test_chat_commands_start_work(bot):
+    async def main():
+        task = interaction(channel_id=CHAT, parent_id=None)
+        await bot.run_task(task, "/task feature", "예산 배너")
+        release = interaction(channel_id=CHAT, parent_id=None)
+        await bot.run_task(release, "/release", "1.0.0")
+        idea = interaction(channel_id=CHAT, parent_id=None)
+        await bot.run_idea(idea, "위젯")
+        debate = interaction(channel_id=CHAT, parent_id=None)
+        await bot.run_debate(debate)
+        wrong = interaction()  # 포럼 포스트 안에서는 쓸 수 없다
+        await bot.run_task(wrong, "/task bug", "x")
+        await drain(bot)
+        return task, idea, wrong
+
+    task, idea, wrong = run(main())
+    assert task.response.sent == [("/task feature 예산 배너", {"silent": True})]
+    assert idea.response.sent == [("아이디어 #7로 기록했다: 위젯", {"silent": True})]
+    assert "채팅 채널에서만" in wrong.response.sent[0][0]
+    # /idea는 바로 기록하고, 나머지는 백그라운드에서 실행한다
+    assert sorted(bot.calls) == sorted(
+        [
+            ("task", "gagaessi", "/task feature", "예산 배너"),
+            ("task", "gagaessi", "/release", "1.0.0"),
+            ("idea", "gagaessi", "위젯"),
+            ("debate", "gagaessi"),
+        ]
+    )
 
 
 class FakeResponse:
@@ -305,20 +398,20 @@ def test_fix_command_passes_recommended_arg(bot):
 def test_command_is_echoed_and_sent_to_engine(bot):
     async def main():
         it = interaction()
-        await bot.run_command(it, CommandName.DECIDE, "배너로 간다")
+        await bot.run_command(it, CommandName.REVISE, "배너 색")
         await drain(bot)
         return it
 
     it = run(main())
-    assert it.response.sent == [("/decide 배너로 간다", {"silent": True})]
-    assert bot.calls == [("command", "500", CommandName.DECIDE, "배너로 간다")]
+    assert it.response.sent == [("/revise 배너 색", {"silent": True})]
+    assert bot.calls == [("command", "500", CommandName.REVISE, "배너 색")]
 
 
 @pytest.mark.parametrize(
     ("kwargs", "expected"),
     [
         ({"user_id": 7}, "Zero만"),
-        ({"parent_id": None}, "포럼의 게시글 안에서만"),
+        ({"parent_id": None}, "포스트 안에서만"),
         ({"channel_id": 999}, "연결된 작업이 없다"),
     ],
 )
@@ -355,7 +448,8 @@ def test_intents_include_message_content(bot):
     assert isinstance(bot.guild_ref, discord.Object) and bot.guild_ref.id == 1
     names = {command.name for command in bot.tree.get_commands(guild=bot.guild_ref)}
     assert names == {
-        "debate", "decide", "approve", "revise", "fix", "resume", "stop", "status", "ping"
+        "task", "release", "debate", "idea", "approve", "revise", "skip", "fix",
+        "resume", "stop", "hire", "status", "ping",
     }  # fmt: skip
     project = project_contexts(bot.config)["gagaessi"]
     assert project.github.repo == "owner/GagaeSsi"
@@ -385,3 +479,46 @@ def test_startup_failure_alerts_ops_and_closes(bot):
     ((text, mention),) = alerts
     assert "시작 실패" in text and "#일반" in text
     assert mention is True
+
+
+def test_hire_is_zero_only_and_reaches_engine(bot):
+    # 채용 제안 답은 작업 게시글이 아니라 운영 채널 등 어디서든 쓴다 (운영 규약 1.12)
+    it = interaction(parent_id=None, channel_id=OPS)
+    run(bot.run_hire(it, accept=False, number=3, note="아직 이르다"))
+    assert bot.calls == [("hire", 3, False, "아직 이르다")]
+    assert it.response.sent == [("채용 제안 #3 기록", {"silent": True})]
+
+    other = interaction(user_id=7)
+    run(bot.run_hire(other, accept=True, number=3, note=""))
+    assert "Zero만" in other.response.sent[0][0]
+    assert len(bot.calls) == 1
+
+
+def test_due_reports_run_once_and_go_to_report_channel(bot):
+    from bot.clock import FixedClock
+    from bot.store import Repository, connect
+
+    async def main():
+        conn = await connect(":memory:")
+        try:
+            clock = FixedClock(datetime(2026, 10, 25, 23, 0, tzinfo=UTC))  # 한국 월 08:00
+            bot.clock = clock
+            bot.repo = Repository(conn, clock)
+            sent = []
+
+            async def report(text, *, mention=False):
+                sent.append((text.splitlines()[0], mention))
+
+            bot.chat.report = report
+            first = await bot.run_due_schedules()
+            again = await bot.run_due_schedules()
+            clock.advance(timedelta(days=1))
+            next_day = await bot.run_due_schedules()
+            return first, again, next_day, sent
+        finally:
+            await conn.close()
+
+    first, again, next_day, sent = run(main())
+    assert sorted(first) == ["morning_report", "weekly_report"]
+    assert again == [] and next_day == ["morning_report"]
+    assert sent[0][0].startswith("**아침 보고**") and sent[1][0].startswith("**주간 보고**")

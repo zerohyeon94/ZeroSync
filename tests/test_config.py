@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from bot.agents import Stage
-from bot.config import PACKAGE_DIR, ConfigError, load_config, parse_env
+from bot.config import OPTIONAL_ENV_KEYS, PACKAGE_DIR, ConfigError, load_config, parse_env
 
 EXAMPLE = PACKAGE_DIR / "projects.example.yaml"
 ENV_EXAMPLE = PACKAGE_DIR.parent / ".env.example"
@@ -36,7 +36,11 @@ PROJECT = (
 
 
 def yaml_text(project=PROJECT, extra=""):
-    return f"projects:\n  gagaessi:\n{project}paths:\n  vault_projects: /vault/Projects\n{extra}"
+    # company는 이 맥의 실제 회사 설정을 읽지 않게 없는 경로로 둔다
+    return (
+        f"projects:\n  gagaessi:\n{project}paths:\n  vault_projects: /vault/Projects\n"
+        f"  company: /nonexistent/zerosync-company\n{extra}"
+    )
 
 
 def write(tmp_path, text, name="projects.yaml"):
@@ -111,7 +115,14 @@ def test_example_file_is_valid():
 
 
 def test_env_example_lists_every_key():
-    assert set(parse_env(ENV_EXAMPLE.read_text(encoding="utf-8"))) == set(ENV)
+    keys = set(parse_env(ENV_EXAMPLE.read_text(encoding="utf-8")))
+    assert keys == set(ENV) | set(OPTIONAL_ENV_KEYS)
+
+
+def test_report_channel_is_optional(tmp_path):
+    assert load(tmp_path).secrets.report_channel_id is None
+    config = load(tmp_path, environ={**ENV, "REPORT_CHANNEL_ID": "77"})
+    assert config.secrets.report_channel_id == "77"
 
 
 # 프로젝트 설정 검증
@@ -155,7 +166,7 @@ def test_rejects_bad_project_key(tmp_path):
 
 def test_rejects_duplicate_forum_channel(tmp_path):
     text = yaml_text().replace("paths:", "  jday:\n" + PROJECT + "paths:")
-    with pytest.raises(ConfigError, match="forum_channel_id가 같다"):
+    with pytest.raises(ConfigError, match="채널 ID가 겹친다"):
         load(tmp_path, text)
 
 
@@ -265,7 +276,6 @@ def test_cli_models_by_stage(tmp_path):
 @pytest.mark.parametrize(
     ("extra", "match"),
     [
-        ("cli:\n  claude_models:\n    review: opus\n", "Claude가 맡지 않는 단계: review"),
         ("cli:\n  codex_models:\n    implement: gpt\n", "Codex가 맡지 않는 단계: implement"),
         ("cli:\n  claude_models:\n    opinon: sonnet\n", "cli.claude_models"),
         ("cli:\n  claude_models:\n    opinion: ''\n", "cli.claude_models"),
@@ -274,3 +284,66 @@ def test_cli_models_by_stage(tmp_path):
 def test_rejects_bad_cli_models(tmp_path, extra, match):
     with pytest.raises(ConfigError, match=match):
         load(tmp_path, yaml_text(extra=extra))
+
+
+# 회사 설정 (SPEC 9.1-1)
+
+
+def test_org_defaults_when_company_dir_has_no_org(tmp_path):
+    config = load(tmp_path)
+    assert config.paths.company.as_posix() == "/nonexistent/zerosync-company"
+    assert config.org.roles.review == "delta"
+
+
+def test_org_is_loaded_from_company_dir(tmp_path):
+    company = tmp_path / "company"
+    company.mkdir()
+    (company / "org.yaml").write_text(
+        "teams:\n  dev: {name: 개발, lead: alpha}\n  qa: {name: QA, lead: delta}\n"
+        "agents:\n"
+        "  alpha: {display: Alpha, team: dev, perspective: p, basic_question: q}\n"
+        "  delta: {display: Delta, team: qa, perspective: p, basic_question: q}\n"
+        "roles: {opinions: [alpha], design: alpha, implement: alpha, review: delta,"
+        " doc_sync: alpha}\n",
+        encoding="utf-8",
+    )
+    (company / "pipelines").mkdir()
+    (company / "pipelines" / "fix.yaml").write_text(
+        "name: 수정\ncommand: /task bug\ntriggers: [discord_task]\nstages:\n"
+        "  - {id: d, kind: diagnose, agent: delta}\n  - {id: a, kind: gate}\n"
+        "  - {id: i, kind: implement, agent: alpha}\n  - {id: t, kind: test}\n"
+        "  - {id: r, kind: review, agent: delta}\n  - {id: m, kind: merge_gate}\n"
+        "budget: {max_calls: 9, max_minutes: 60}\n",
+        encoding="utf-8",
+    )
+    text = yaml_text().replace("/nonexistent/zerosync-company", str(company))
+    config = load(tmp_path, text)
+    assert config.org.agent_names == ("alpha", "delta")
+    assert list(config.pipelines) == ["fix"]
+
+
+def test_default_pipelines_need_default_agents(tmp_path):
+    # org.yaml을 바꾸고 파이프라인을 두지 않으면 기본 파이프라인의 담당이 없어 막는다
+    company = tmp_path / "company"
+    company.mkdir()
+    (company / "org.yaml").write_text(
+        "teams:\n  dev: {name: 개발, lead: alpha}\n  qa: {name: QA, lead: delta}\n"
+        "agents:\n"
+        "  alpha: {display: Alpha, team: dev, perspective: p, basic_question: q}\n"
+        "  delta: {display: Delta, team: qa, perspective: p, basic_question: q}\n"
+        "roles: {opinions: [alpha], design: alpha, implement: alpha, review: delta,"
+        " doc_sync: alpha}\n",
+        encoding="utf-8",
+    )
+    text = yaml_text().replace("/nonexistent/zerosync-company", str(company))
+    with pytest.raises(ConfigError, match="R4"):
+        load(tmp_path, text)
+
+
+def test_broken_org_is_a_config_error(tmp_path):
+    company = tmp_path / "company"
+    company.mkdir()
+    (company / "org.yaml").write_text("teams: {}\nagents: {}\nroles: {review: x}\n")
+    text = yaml_text().replace("/nonexistent/zerosync-company", str(company))
+    with pytest.raises(ConfigError, match="org.yaml"):
+        load(tmp_path, text)

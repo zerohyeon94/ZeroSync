@@ -26,5 +26,10 @@ def render_status(task: TaskRecord, now: datetime) -> str:
     return "\n".join(lines)
 
 
-def render_ping(*, running_cli: int, active_tasks: int) -> str:
-    return f"살아 있다. 실행 중 CLI {running_cli}개, 진행 중 작업 {active_tasks}개."
+def render_ping(*, running_cli: int, active_tasks: int, waiting: int = 0, paused: str = "") -> str:
+    text = (
+        f"살아 있다. 실행 중 CLI {running_cli}개, 대기 {waiting}개, 진행 중 작업 {active_tasks}개."
+    )
+    if paused:
+        text += f" 사용량 한도로 {paused}까지 대기열을 멈췄다."
+    return text

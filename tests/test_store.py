@@ -20,7 +20,7 @@ from bot.store import (
     connect,
     schema_version,
 )
-from bot.workflow.state import PostCreated, TaskState, ZeroMessage, start_task, transition
+from bot.workflow.state import TaskState
 
 T0 = datetime(2026, 10, 7, 9, 0, tzinfo=UTC)
 
@@ -39,14 +39,13 @@ def zero(text, kind=EventKind.MESSAGE):
 
 
 async def new_task(repo, thread="thread-1"):
-    result = start_task(PostCreated("예산 배너", "배너를 띄우자"))
     return await repo.create_task(
         project="gagaessi",
         discord_thread=thread,
         title="예산 배너",
-        state=result.state,
+        state=TaskState.OPINIONS,
         event=zero("배너를 띄우자"),
-        updates=result.updates,
+        updates={"opinion_rounds": 0},
     )
 
 
@@ -81,7 +80,7 @@ def test_connect_creates_schema_and_file(tmp_path):
 
     version, tables, fk = run(scenario())
     assert path.exists()
-    assert version == SCHEMA_VERSION == 2
+    assert version == SCHEMA_VERSION == 6
     assert {"tasks", "events", "agent_runs"} <= tables
     assert fk == 1
 
@@ -160,13 +159,12 @@ def test_apply_transition_saves_state_fields_and_event_together():
         conn, repo = await open_repo(clock=clock)
         task = await new_task(repo)
         clock.advance(timedelta(minutes=5))
-        result = transition(task, ZeroMessage("@codex 반례는?"))
         task = await repo.apply_transition(
             task.id,
             expected_state=task.state,
-            new_state=result.state,
+            new_state=TaskState.OPINIONS,
             event=zero("@codex 반례는?"),
-            updates=result.updates,
+            updates={"opinion_rounds": 1},
         )
         events = await repo.list_events(task.id, {EventKind.MESSAGE})
         await conn.close()
@@ -336,5 +334,56 @@ def test_v1_database_is_upgraded_with_defaults(tmp_path):
             await conn.close()
 
     version, task = run(scenario())
-    assert version == 2
+    assert version == SCHEMA_VERSION
     assert (task.review_limit_bonus, task.test_limit_bonus, task.recommended_fixed) == (0, 0, 0)
+
+
+def test_v2_runs_get_engine_from_legacy_agent_name(tmp_path):
+    """ADR-005 기준 실행 기록(agent=claude/codex)은 v3에서 엔진 열을 그 이름으로 채운다."""
+    import sqlite3
+
+    from bot.store.db import MIGRATIONS
+
+    path = tmp_path / "v2.db"
+    raw = sqlite3.connect(path)
+    raw.executescript(MIGRATIONS[0] + MIGRATIONS[1] + "\nPRAGMA user_version = 2;")
+    raw.execute(
+        "INSERT INTO tasks (project, discord_thread, title, state, created_at, updated_at) "
+        "VALUES ('gagaessi', 't', '제목', 'DONE', 'x', 'x')"
+    )
+    raw.execute(
+        "INSERT INTO agent_runs (id, task_id, agent, stage, status, started_at) "
+        "VALUES ('r1', 1, 'codex', 'review', 'ok', 'x')"
+    )
+    raw.commit()
+    raw.close()
+
+    async def scenario():
+        conn, repo = await open_repo(path)
+        try:
+            return await repo.get_agent_run("r1")
+        finally:
+            await conn.close()
+
+    record = run(scenario())
+    assert (record.agent, record.engine) == ("codex", "codex")
+
+
+def test_bot_state_and_schedule_runs(tmp_path):
+    async def scenario():
+        conn, repo = await open_repo(tmp_path / "s.db")
+        try:
+            assert await repo.get_state("k") is None
+            await repo.set_state("k", "1")
+            await repo.set_state("k", "2")
+            value = await repo.get_state("k")
+            await repo.set_state("k", None)
+            await repo.record_schedule_run("morning_report", "2026-10-28T00:00:00+00:00")
+            await repo.record_schedule_run("morning_report", "2026-10-29T00:00:00+00:00")
+            return value, await repo.get_state("k"), await repo.schedule_runs()
+        finally:
+            await conn.close()
+
+    value, cleared, runs = run(scenario())
+    assert (value, cleared) == ("2", None)
+    assert runs == {"morning_report": "2026-10-29T00:00:00+00:00"}
