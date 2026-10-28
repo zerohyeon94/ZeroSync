@@ -108,7 +108,9 @@ def test_project_for_forum(tmp_path):
     assert config.project_for_forum("999") is None
 
 
-def test_example_file_is_valid():
+def test_example_file_is_valid(monkeypatch, tmp_path):
+    # 예시의 company(~/.zerosync/company)가 이 맥의 실제 회사 설정을 가리키지 않게 한다
+    monkeypatch.setenv("HOME", str(tmp_path))
     environ = {key: "1" for key in ENV}
     config = load_config(EXAMPLE, Path("/nonexistent/.env"), environ)
     assert list(config.projects) == ["gagaessi"]

@@ -3,8 +3,9 @@
 에이전트(FakeAgentRunner), 채팅(FakeChatIO), GitHub(FakeGitHub), git(FakeGit), 테스트 실행,
 저장소(메모리 SQLite), 시각(FixedClock)을 가짜로 두고 흐름을 시뮬레이션한다.
 
-TEST_ORG: Beta·Gamma·Alpha는 claude 러너, Delta(리뷰·진단, 읽기 전용)는 codex 러너로 실행한다.
-claude 러너 응답은 기획 → 화면 디자인 → 설계 → 구현 순서이고, codex 러너는 Delta 몫이다.
+TEST_ORG: Beta·Gamma·Alpha와 팀원(Epsilon, Zeta)은 claude 러너, Delta(리뷰·팀장 확인, 읽기 전용)는
+codex 러너로 실행한다. claude 러너 응답은 기획 → 화면 디자인 → 설계 → 구현 → Alpha의 팀장 확인
+순서이고, codex 러너는 Delta 몫이다.
 """
 
 import asyncio
@@ -394,6 +395,7 @@ def test_feature_cycle_from_chat_to_docs():
             ui_reply(),
             design_reply(),
             work_reply(),
+            review_reply(),  # Alpha의 팀장 확인
             doc_reply(),
         ],
         codex=[review_reply()],
@@ -425,9 +427,14 @@ def test_feature_cycle_from_chat_to_docs():
         design_request, implement_request = h.claude.requests[4:6]
         assert design_request.stage is Stage.DESIGN
         assert implement_request.stage is Stage.IMPLEMENT
+        assert "Epsilon · 개발팀원" in implement_request.prompt
         assert "docs/디자인/42" in implement_request.prompt
+        check = h.claude.requests[6]
+        assert check.stage is Stage.LEAD_CHECK and "Alpha · 개발팀장" in check.prompt
+        assert "배너를 추가했다" in check.prompt  # 팀원의 구현 보고를 본다
         (review,) = h.codex.requests
         assert review.stage is Stage.REVIEW and "Delta · QA팀장" in review.prompt
+        assert "Epsilon · 개발팀원" in review.prompt  # 구현 담당은 팀원이다
         (pr,) = h.github.named("create_pr")
         assert pr[1:4] == (43, "develop", "feat/42-budget-banner")
         assert pr[4] == "feat(budget): 월 예산 초과 시 홈 화면 배너 표시"
@@ -438,7 +445,7 @@ def test_feature_cycle_from_chat_to_docs():
         await h.engine.poll_merges()
         task = await h.task()
         assert task.state is TaskState.AWAIT_DOC_APPROVAL
-        doc_request = h.claude.requests[6]
+        doc_request = h.claude.requests[7]
         assert doc_request.stage is Stage.DOC_SYNC and "기존" in doc_request.prompt
 
         task = await h.command(CommandName.APPROVE)
@@ -449,13 +456,19 @@ def test_feature_cycle_from_chat_to_docs():
 
 
 def test_plan_without_ui_change_skips_ui_design():
-    @scenario(claude=[plan_reply(has_ui_change=False), design_reply(), work_reply()],
+    @scenario(claude=[plan_reply(has_ui_change=False), design_reply(), work_reply(),
+                      review_reply()],
               codex=[review_reply()])  # fmt: skip
     async def _(h):
         await h.engine.task_from_chat(P, "/task feature", "예산 배너")
         task = await h.command(CommandName.APPROVE)
         assert task.state is TaskState.AWAIT_MERGE
-        assert [r.stage for r in h.claude.requests] == [Stage.PLAN, Stage.DESIGN, Stage.IMPLEMENT]
+        assert [r.stage for r in h.claude.requests] == [
+            Stage.PLAN,
+            Stage.DESIGN,
+            Stage.IMPLEMENT,
+            Stage.LEAD_CHECK,
+        ]
 
 
 def test_design_must_keep_approved_change_fields():
@@ -465,6 +478,7 @@ def test_design_must_keep_approved_change_fields():
             design_reply(slug="other-slug", design_doc="docs/설계/42-other-slug.md"),
             design_reply(),
             work_reply(),
+            review_reply(),
         ],
         codex=[review_reply()],
     )
@@ -487,8 +501,8 @@ def test_revise_plan_reruns_plan_with_feedback():
 
 def test_test_failure_is_fixed_by_implementer_then_reviewed():
     @scenario(
-        claude=[plan_reply(has_ui_change=False), design_reply(), work_reply(),
-                work_reply("fix(budget): 경계 수정\n\nRefs: #42")],
+        claude=[plan_reply(has_ui_change=False), design_reply(), work_reply(), review_reply(),
+                work_reply("fix(budget): 경계 수정\n\nRefs: #42"), review_reply()],
         codex=[review_reply()],
         tests=[make_report(False, ["BudgetTests testOver"]), make_report()],
     )  # fmt: skip
@@ -496,36 +510,98 @@ def test_test_failure_is_fixed_by_implementer_then_reviewed():
         await h.engine.task_from_chat(P, "/task feature", "예산 배너")
         task = await h.command(CommandName.APPROVE)
         assert task.state is TaskState.AWAIT_MERGE and task.test_retry == 1
-        fix = h.claude.requests[3]
+        fix, check = h.claude.requests[4:6]
         assert fix.stage is Stage.FIX and "BudgetTests testOver" in fix.prompt
+        # 수정도 팀원 결과라 팀장이 다시 확인한다 (ADR-008)
+        assert check.stage is Stage.LEAD_CHECK and "BudgetTests testOver" not in check.prompt
+
+
+def test_lead_check_changes_are_fixed_by_member_then_rechecked():
+    @scenario(
+        claude=[plan_reply(has_ui_change=False), design_reply(), work_reply(),
+                review_reply(required=1), work_reply("fix(budget): 확인 반영\n\nRefs: #42"),
+                review_reply()],
+        codex=[review_reply()],
+    )  # fmt: skip
+    async def _(h):
+        await h.engine.task_from_chat(P, "/task feature", "예산 배너")
+        task = await h.command(CommandName.APPROVE)
+        assert task.state is TaskState.AWAIT_MERGE
+        stages = [r.stage for r in h.claude.requests[2:]]
+        assert stages == [Stage.IMPLEMENT, Stage.LEAD_CHECK, Stage.FIX, Stage.LEAD_CHECK]
+        fix, recheck = h.claude.requests[4:6]
+        assert "Alpha · 개발팀장(팀장)의 확인 [필수] 지적" in fix.prompt and "필수 1" in fix.prompt
+        assert "지난 확인의 [필수] 지적" in recheck.prompt
+        checks = await h.repo.list_events(1, {EventKind.LEAD_CHECK})
+        assert [e.payload["round"] for e in checks] == [1, 2]
+        assert [e.actor for e in checks] == ["alpha", "alpha"]
+        fixes = await h.repo.list_events(1, {EventKind.FIX})
+        assert [e.payload["source"] for e in fixes] == ["lead_check"]
+        assert any("구현 팀장 확인 1회: 수정 요청" in post.text for post in h.chat.posts)
+
+
+def test_lead_check_over_limit_needs_human():
+    @scenario(
+        claude=[plan_reply(has_ui_change=False), design_reply(), work_reply(),
+                review_reply(required=1), work_reply("fix(budget): 확인 반영\n\nRefs: #42"),
+                review_reply(required=1)],
+    )  # fmt: skip
+    async def _(h):
+        await h.engine.task_from_chat(P, "/task feature", "예산 배너")
+        task = await h.command(CommandName.APPROVE)
+        assert task.state is TaskState.NEEDS_HUMAN
+        assert task.prev_state is TaskState.IMPLEMENTING
+        assert any("팀장 확인을 2회 통과하지 못했다" in post.text for post in h.chat.posts)
+        assert h.codex.requests == []  # 확인을 통과하지 못하면 테스트·리뷰로 가지 않는다
 
 
 # 버그 수정, 출시, 정기 테스트
 
 
 def test_bugfix_flow_creates_branch_from_diagnosis():
-    @scenario(claude=[work_reply("fix(budget): 날짜 고정\n\nRefs: #42")],
-              codex=[diagnosis_reply(), review_reply()])  # fmt: skip
+    @scenario(claude=[diagnosis_reply(), work_reply("fix(budget): 날짜 고정\n\nRefs: #42"),
+                      review_reply()],
+              codex=[review_reply(), review_reply()])  # fmt: skip
     async def _(h):
         await h.engine.task_from_chat(P, "/task bug", "날짜 테스트")
         task = await h.task()
         assert task.state is TaskState.AWAIT_FIX_APPROVAL and task.branch is None
-        assert h.codex.requests[0].stage is Stage.DIAGNOSE
+        # Zeta가 진단하고 Delta가 확인한다. 승인 안내는 확인을 통과한 뒤에 붙는다
+        diagnose = h.claude.requests[0]
+        assert diagnose.stage is Stage.DIAGNOSE and "Zeta · QA팀원" in diagnose.prompt
+        check = h.codex.requests[0]
+        assert check.stage is Stage.LEAD_CHECK and "날짜 의존 테스트" in check.prompt
+        member_post = next(p for p in h.chat.posts if "날짜 의존 테스트" in p.text)
+        assert "/approve" not in member_post.text
+        assert h.chat.posts[-1].mention and "/approve" in h.chat.posts[-1].text
         task = await h.command(CommandName.APPROVE)
         assert task.state is TaskState.AWAIT_MERGE
         assert task.branch == "fix/42-date-fix"
-        assert "기준 날짜를 고정한다" in h.claude.requests[0].prompt
+        assert "기준 날짜를 고정한다" in h.claude.requests[1].prompt
         h.github.pr_states[43] = PrState("MERGED", True)
         await h.engine.poll_merges()
         assert (await h.task()).state is TaskState.DONE  # 버그 수정은 문서 반영 없이 끝난다
 
 
 def test_bugfix_diagnosis_without_change_fields_is_retried():
-    @scenario(codex=[diagnosis_reply(with_change=False), diagnosis_reply()])
+    @scenario(claude=[diagnosis_reply(with_change=False), diagnosis_reply()],
+              codex=[review_reply()])  # fmt: skip
     async def _(h):
         await h.engine.task_from_chat(P, "/task bug", "날짜 테스트")
-        assert len(h.codex.requests) == 2
+        assert len(h.claude.requests) == 2
         assert (await h.task()).state is TaskState.AWAIT_FIX_APPROVAL
+
+
+def test_diagnosis_lead_check_changes_rerun_diagnosis():
+    @scenario(claude=[diagnosis_reply(), diagnosis_reply()],
+              codex=[review_reply(required=1), review_reply()])  # fmt: skip
+    async def _(h):
+        await h.engine.task_from_chat(P, "/task bug", "날짜 테스트")
+        assert (await h.task()).state is TaskState.AWAIT_FIX_APPROVAL
+        again = h.claude.requests[1]
+        assert again.stage is Stage.DIAGNOSE
+        assert "Delta · QA팀장(팀장)의 확인 [필수] 지적" in again.prompt
+        assert len(await h.repo.list_events(1, {EventKind.DIAGNOSIS})) == 2
 
 
 def test_release_flow_needs_approval_and_zero_submits():
@@ -551,7 +627,8 @@ def test_nightly_test_pass_is_silent():
 
 
 def test_nightly_test_failure_is_diagnosed_and_reported():
-    @scenario(codex=[diagnosis_reply(with_change=False)], tests=[make_report(False, ["T"])])
+    @scenario(claude=[diagnosis_reply(with_change=False)], codex=[review_reply()],
+              tests=[make_report(False, ["T"])])  # fmt: skip
     async def _(h):
         task = await h.engine.start_scheduled(P, "nightly-test")
         assert task.state is TaskState.DONE

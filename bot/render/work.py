@@ -216,6 +216,18 @@ def render_review(review: Review, *, round_: int) -> str:
     return "\n".join(lines)
 
 
+def render_lead_check(review: Review, *, label: str, round_: int) -> str:
+    """팀장 확인 결과 (ADR-008). 통과는 짧게, 수정 요청은 지적을 함께 보인다."""
+    if review.verdict.value == "APPROVED":
+        head = f"**{label} 팀장 확인 {round_}회: 통과** — {review.summary}"
+    else:
+        head = f"**{label} 팀장 확인 {round_}회: 수정 요청** — {review.summary}"
+    lines = [head]
+    if review.findings:
+        lines += ["", render_findings(review.findings)]
+    return "\n".join(lines)
+
+
 def render_pr_body(
     *,
     decision: str,

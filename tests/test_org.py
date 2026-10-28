@@ -49,6 +49,8 @@ def test_default_org_is_adr_007_product_department():
         "Gamma · 디자인팀장",
         "Alpha · 개발팀장",
         "Delta · QA팀장",
+        "Epsilon · 개발팀원",
+        "Zeta · QA팀원",
     ]
     assert {org.engine(a) for a in org.agent_names} == {"claude"}
     roles = org.roles
@@ -122,6 +124,7 @@ def test_example_company_config_is_valid():
     from pathlib import Path
 
     org = load_org(Path(__file__).resolve().parent.parent / "examples" / "company")
-    assert org.agent_names == ("beta", "gamma", "alpha", "delta")
+    assert org.agent_names == ("beta", "gamma", "alpha", "delta", "epsilon", "zeta")
+    assert org.display("epsilon") == "Epsilon · 개발팀원"
     assert all(org.profile(agent) for agent in org.agent_names)
     assert org.roles == DEFAULT_ORG.roles

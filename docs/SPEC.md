@@ -31,7 +31,7 @@ ZeroSync는 Zero 한 사람을 위한 회사다 (ADR-007). 회사는 교육·비
 
 완료 기준은 다음과 같다.
 
-1. 가게씨에서 기능 개발 흐름 "채팅 의견 → `/task` → Beta 기획 → Zero 승인 → Gamma 화면 디자인 → Zero 승인 → Alpha 설계·구현 → 봇 테스트 → Delta 검증(최대 3회) → Zero merge → 문서 반영" 한 사이클을 실제로 완주한다
+1. 가게씨에서 기능 개발 흐름 "채팅 의견 → `/task` → Beta 기획 → Zero 승인 → Gamma 화면 디자인 → Zero 승인 → Alpha 설계 → Epsilon 구현(Alpha 확인) → 봇 테스트 → Delta 검증(최대 3회) → Zero merge → 문서 반영" 한 사이클을 실제로 완주한다
 2. 버그 수정·출시 흐름으로 가게씨를 안정화하고 첫 출시 준비물을 만든다
 3. 파이프라인을 YAML로 선언해 흐름을 코드 수정 없이 추가할 수 있다
 4. 봇 일정으로 정기 업무(아침·주간 보고, 정기 테스트)가 돈다
@@ -92,10 +92,10 @@ launchd (LaunchAgent, 로그인 사용자 세션)
 | `UI_DESIGNING` | Gamma | 실행 중 | 화면 디자인 명세 작성, Claude 디자인 링크, 디자인 요약 JSON 출력. 기획 요약의 화면 변경이 없으면 건너뛴다 |
 | `AWAIT_UI_APPROVAL` | - | Zero 대기 | `/approve` 또는 `/revise` |
 | `DESIGNING` | Alpha | 실행 중 | 기술 설계 문서 작성, 설계 요약 JSON 출력. 승인 없이 구현으로 이어진다 |
-| `IMPLEMENTING` | Alpha | 실행 중 | 작업 브랜치 로컬 커밋 |
+| `IMPLEMENTING` | Epsilon (Alpha 확인) | 실행 중 | 작업 브랜치 로컬 커밋. Alpha가 확인을 통과시켜야 테스트로 간다 (ADR-008) |
 | `TESTING` | 봇 | 실행 중 | test 명령 실행 (전역 락) |
 | `REVIEWING` | Delta (새 세션, 읽기 전용) | 실행 중 | diff + 기획·디자인·설계 요약 + 테스트 결과 → 판정 |
-| `FIXING` | Alpha | 실행 중 | [필수] 지적 또는 테스트 실패 대응 |
+| `FIXING` | Epsilon (Alpha 확인) | 실행 중 | [필수] 지적 또는 테스트 실패 대응 |
 | `AWAIT_MERGE` | - | Zero 대기 | APPROVED, draft 해제됨. GitHub에서 merge |
 | `DOC_DRAFTING` | Beta | 실행 중 | DOC_SYNC 수정안 작성 (읽기 전용) |
 | `AWAIT_DOC_APPROVAL` | - | Zero 대기 | `/approve`, `/revise`, `/skip` |
@@ -112,9 +112,9 @@ launchd (LaunchAgent, 로그인 사용자 세션)
 
 | 파이프라인 | 상태 순서 |
 |---|---|
-| 버그 수정 (`bugfix.yaml`) | `DIAGNOSING`(Delta, 읽기 전용) → `AWAIT_FIX_APPROVAL` → `IMPLEMENTING`(Alpha) → `TESTING` → `REVIEWING`(Delta) ⇄ `FIXING` → `AWAIT_MERGE` → `DONE`. 문서 반영은 하지 않는다. 기능 정의서를 고칠 일이면 `/task feature`로 연다. 작업 브랜치와 Issue 제목은 진단의 변경 필드(change_type, slug 등)로 만든다 |
+| 버그 수정 (`bugfix.yaml`) | `DIAGNOSING`(Zeta, 읽기 전용, Delta 확인) → `AWAIT_FIX_APPROVAL` → `IMPLEMENTING`(Epsilon, Alpha 확인) → `TESTING` → `REVIEWING`(Delta) ⇄ `FIXING` → `AWAIT_MERGE` → `DONE`. 문서 반영은 하지 않는다. 기능 정의서를 고칠 일이면 `/task feature`로 연다. 작업 브랜치와 Issue 제목은 진단의 변경 필드(change_type, slug 등)로 만든다 |
 | 출시 (`release.yaml`) | `TESTING`(전체 테스트·빌드) → `RELEASE_PREPARING`(Beta, 배포 겸임) → `AWAIT_RELEASE_APPROVAL` → `/approve`로 `DONE`. 스토어 제출은 승인 뒤 Zero가 직접 한다 |
-| 정기 테스트 (`nightly-test.yaml`) | `TESTING` → 통과면 `DONE`(Discord 알림 없음). 실패면 `DIAGNOSING`(Delta) → 포럼에 보고 포스트(`확인필요` 태그) → `DONE`. 수정은 Zero가 `/task bug`로 시작한다. 실행 중에는 `sched:` 가짜 스레드를 쓰고 보고할 때 실제 포스트를 연다. [미구현] 같은 실패를 기존 보고 포스트에 덧붙이기, `확인필요` 태그 |
+| 정기 테스트 (`nightly-test.yaml`) | `TESTING` → 통과면 `DONE`(Discord 알림 없음). 실패면 `DIAGNOSING`(Zeta, Delta 확인) → 포럼에 보고 포스트(`확인필요` 태그) → `DONE`. 수정은 Zero가 `/task bug`로 시작한다. 실행 중에는 `sched:` 가짜 스레드를 쓰고 보고할 때 실제 포스트를 연다. [미구현] 같은 실패를 기존 보고 포스트에 덧붙이기, `확인필요` 태그 |
 
 - 기획이 없는 파이프라인(버그 수정)은 진단 뒤 `gate`를 둔다 (3.5 규칙 R2)
 
@@ -208,12 +208,12 @@ stages:
   - {id: ui,         kind: ui_design, agent: gamma, when: has_ui_change}
   - {id: approve_ui, kind: gate,                  when: has_ui_change}
   - {id: design,     kind: design,    agent: alpha}                # 기술 설계
-  - {id: implement,  kind: implement, agent: alpha}
+  - {id: implement,  kind: implement, agent: epsilon, check: alpha} # 팀원 구현, 팀장 확인 (ADR-008)
   - {id: test,       kind: test,      retries: 2}                  # 봇이 실행
   - {id: review,     kind: review,    agent: delta, rounds: 3}
   - {id: merge,      kind: merge_gate}                             # Zero가 GitHub에서 merge
   - {id: docs,       kind: doc_sync,  agent: beta}
-budget: {max_calls: 25, max_minutes: 240}                          # 파이프라인 1회당 (Q18, ADR-007)
+budget: {max_calls: 35, max_minutes: 300}                          # 파이프라인 1회당 (Q18, ADR-007, ADR-008)
 ```
 
 ```yaml
@@ -223,13 +223,13 @@ command: /task bug
 triggers: [discord_task]
 priority: bugfix
 stages:
-  - {id: diagnose,  kind: diagnose,  agent: delta}
+  - {id: diagnose,  kind: diagnose,  agent: zeta, check: delta}
   - {id: approve,   kind: gate}                       # 수정 방향 승인
-  - {id: implement, kind: implement, agent: alpha}
+  - {id: implement, kind: implement, agent: epsilon, check: alpha}
   - {id: test,      kind: test,      retries: 2}
   - {id: review,    kind: review,    agent: delta, rounds: 3}
   - {id: merge,     kind: merge_gate}
-budget: {max_calls: 12, max_minutes: 120}
+budget: {max_calls: 18, max_minutes: 150}
 ```
 
 ```yaml
@@ -253,11 +253,12 @@ schedule: "0 3 * * *"
 priority: bugfix
 stages:
   - {id: test,     kind: test}
-  - {id: diagnose, kind: diagnose, agent: delta, when: test_failed}
+  - {id: diagnose, kind: diagnose, agent: zeta, check: delta, when: test_failed}
   - {id: report,   kind: report}                         # 실패 때만 포럼에 보고 포스트
-budget: {max_calls: 3, max_minutes: 30}
+budget: {max_calls: 6, max_minutes: 45}
 ```
 
+- `check`는 팀장 확인이다 (ADR-008). 구현·진단 단계에만 둔다. 팀원의 결과를 팀장이 리뷰 판정 형식으로 확인하고, [필수] 지적이 있으면 팀원이 고친 뒤 다시 확인한다. `check_rounds`(기본 `limits.max_check_rounds` 2회) 안에 통과하지 못하면 단계 실패(`NEEDS_HUMAN`)다. 확인은 단계 안에서 일어나므로 상태를 늘리지 않는다. 구현 뒤의 수정(`FIXING`)도 같은 팀장이 확인한다. 승인 게이트 안내는 확인을 통과한 뒤에 붙는다
 - `when`은 앞 단계 출력 JSON의 정해진 불리언 필드(`has_ui_change`)나 봇이 아는 결과(`test_failed`)만 받는다. 봇은 조건을 해석하지 않고 값을 읽을 뿐이다 [제안]
 - 채팅의 대화는 파이프라인이 아니다. 아무도 부르지 않았을 때 답할 팀장은 회사 설정의 제품 채널 설정(`chat_default: [beta, alpha]`)에 둔다 (6.1, 9.1-1). 구현은 제품별이 아니라 `org.yaml`의 `roles.opinions` 하나를 모든 제품에 쓴다
 
@@ -288,8 +289,10 @@ budget: {max_calls: 3, max_minutes: 30}
 | R3 | 외부에 쓰는 단계(`implement` 이후 push·PR, `external`) 뒤의 merge·배포는 `merge_gate` 또는 `gate`를 거친다 |
 | R4 | 에이전트는 `org.yaml`에 있는 이름이다. 엔진이 Codex인 에이전트는 읽기 전용 일(채팅 답, `review`, `diagnose`)에만 둔다 |
 | R5 | `triggers`의 출처는 6.5·6.6에서 정의한 값(`discord_task`, `schedule`)이다. 입력 계층은 여기 적힌 파이프라인만 받는다 |
+| R6 | `check`(팀장 확인)는 `implement`·`diagnose`에만 두고, 그 단계 담당이 속한 팀의 팀장이 맡는다. 담당 자신은 맡지 않는다 (ADR-008) |
 
 - R1은 리뷰를 Delta가 맡으면서 지켜진다. 2026-10-26판 예시는 기획과 리뷰를 모두 Beta에게 두어 R1과 충돌했다 (ADR-007에서 정리)
+- R1에서 작성 단계의 `check` 담당도 작성 담당으로 본다 (ADR-008). 구현을 확인하는 Alpha와 리뷰하는 Delta가 다르므로 지켜진다
 - 상태 머신은 파이프라인 선언을 입력으로 받는 순수 함수다 (`bot/workflow/state.py`, 3.4). 선언은 회사 저장소 `pipelines/*.yaml`에서 읽고, 폴더가 없으면 코드의 기본 선언(`bot/pipeline.py` `default_pipelines`)을 쓴다
 - 추가 규칙(구현): 각 단계 종류(`gate` 제외)는 흐름마다 한 번만 쓴다. `gate`는 기획·화면 디자인·설계·진단·출시 준비 바로 뒤에만 둔다
 
@@ -461,7 +464,7 @@ class AgentResult:
 - `mention=False`면 알림 없는 메시지로 보낸다. 멘션 문자열(`<@Zero ID>`)과 1,900자 분할은 구현 쪽 책임이다
 - 채널 구성 [확정] (ADR-007): 제품마다 포럼 `#<제품>`(정식 진행, 팀 보고)과 채팅 `#<제품>-chat`(의견 나누기), Zero 보고용 `#대표실`, 봇 상태용 `#zerosync-ops`. 교육·비서 채널은 Phase 8에서 더한다. 채널 이름은 회사 설정에서 바꿀 수 있다
 - 채팅 답·반박은 답할 팀장들의 응답이 모두 끝난 뒤 `chat_default` 순서(Beta, Alpha)로 게시하고, 마지막 게시에서 멘션한다. 실행 실패한 쪽은 그 자리에 [ZeroSync] 안내를 게시하고 #zerosync-ops에 알린다 (2026-10-10 구현, ADR-005 기준은 포럼 의견)
-- 게시 이름: `[이름 · 직책]`(예: `[Beta · 기획팀장]`, `[Gamma · 디자인팀장]`, `[Alpha · 개발팀장]`, `[Delta · QA팀장]`)과 `[ZeroSync]` (운영 규약 1.2, Q16). ADR-005 기준 구현은 `[Beta · Claude]`, `[Alpha · Codex]`다. 에이전트 메시지는 웹훅의 username 지정으로 게시한다
+- 게시 이름: `[이름 · 직책]`(예: `[Beta · 기획팀장]`, `[Gamma · 디자인팀장]`, `[Alpha · 개발팀장]`, `[Delta · QA팀장]`, `[Epsilon · 개발팀원]`, `[Zeta · QA팀원]`)과 `[ZeroSync]` (운영 규약 1.2, Q16). ADR-005 기준 구현은 `[Beta · Claude]`, `[Alpha · Codex]`다. 에이전트 메시지는 웹훅의 username 지정으로 게시한다
 - 웹훅은 봇이 시작할 때 각 포럼·채팅 채널과 `#대표실`에서 찾거나 만든다(Manage Webhooks 권한). 웹훅 URL을 `.env`에 두지 않는다 [확정] (Q6)
   - 이름이 `ZeroSync`이고 이 봇이 만든 웹훅을 다시 쓴다. `[ZeroSync]` 안내도 같은 웹훅으로 보내 모든 게시를 한 경로로 처리한다 (discord.py 2.7.1의 `Webhook.send`가 `thread`, `silent`를 지원)
 - 입력 판정 (`bot/discord_io/rules.py`): Zero가 제품 채팅 채널에 쓴 메시지와 제품 포럼의 스레드에 쓴 메시지만 처리한다 (ADR-007로 채팅 추가. ADR-005 기준 구현은 포럼만). 봇·웹훅 메시지는 무시한다(자기 게시 반복 방지). 포럼 게시글의 첫 메시지는 ID가 스레드 ID와 같으므로 이것으로 게시글과 추가 질문을 구분한다. 제목은 스레드 이름, 본문은 첫 메시지 내용
@@ -559,7 +562,7 @@ bot/
   org.py               # org.yaml·인격 파일 로더, 에이전트 → 엔진 러너 선택
   scheduler.py         # 내장 일정(아침·주간 보고)과 파이프라인 schedule, 놓친 실행 따라잡기
   reports.py           # 아침·주간 보고 만들기 (DB에서, 에이전트 호출 없음)
-  pipeline.py          # 파이프라인 YAML 로더, 규칙 검사 R1~R5, `when` 조건, 기본 선언과 legacy 흐름
+  pipeline.py          # 파이프라인 YAML 로더, 규칙 검사 R1~R6, `when` 조건, 기본 선언과 legacy 흐름
   workflow/
     state.py           # 상태 enum, 이벤트, 전이 규칙 (순수 함수)
     engine.py          # 효과 실행, 예산·사용량 한도, 채팅 대화
@@ -859,7 +862,7 @@ products:
 ```
 
 - 회사 설정 경로는 공개 저장소 쪽 설정(`paths.company`, 기본 `~/.zerosync/company`)으로 지정한다
-- 로더는 지금 `config.py`와 같은 규칙(모르는 키 오류, 값 없는 오류 메시지)을 따르고, 불러올 때 3.5의 규칙 R1~R5를 검사한다
+- 로더는 지금 `config.py`와 같은 규칙(모르는 키 오류, 값 없는 오류 메시지)을 따르고, 불러올 때 3.5의 규칙 R1~R6을 검사한다
 - 수치(`daily_calls`, 파이프라인 `budget`)는 ADR-007의 시작값이다. 2주 운영 뒤 주간 보고를 보고 고친다
 
 ### 9.2 `.env` (커밋 금지)

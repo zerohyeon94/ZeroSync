@@ -22,7 +22,8 @@ stages:
   agent: alpha
 - id: implement
   kind: implement
-  agent: alpha
+  agent: epsilon
+  check: alpha               # 팀원 결과를 팀장이 확인한다 (ADR-008)
 - id: test
   kind: test
 - id: review
@@ -34,5 +35,5 @@ stages:
   kind: doc_sync
   agent: beta
 budget:
-  max_calls: 25
-  max_minutes: 240
+  max_calls: 35
+  max_minutes: 300

@@ -26,7 +26,9 @@ LEGACY_AGENTS: dict[str, tuple[str, EngineName]] = {
 }
 
 # Codex 러너는 읽기 전용 샌드박스로만 실행된다 (운영 규약 1.3)
-READ_ONLY_STAGES = frozenset({Stage.OPINION, Stage.DEBATE, Stage.REVIEW, Stage.DIAGNOSE})
+READ_ONLY_STAGES = frozenset(
+    {Stage.OPINION, Stage.DEBATE, Stage.REVIEW, Stage.DIAGNOSE, Stage.LEAD_CHECK}
+)
 
 _AGENT_KEY = re.compile(r"^[a-z][a-z0-9]{0,19}$")
 ORG_FILE = "org.yaml"
@@ -162,7 +164,7 @@ class Org(_Model):
 
 
 def _default_org() -> Org:
-    """ADR-007의 제품 부서 기본 구성. org.yaml이 없을 때 쓴다."""
+    """ADR-007·ADR-008의 제품 부서 기본 구성. org.yaml이 없을 때 쓴다."""
     return Org(
         teams={
             "planning": TeamSpec(name="기획", lead="beta"),
@@ -208,6 +210,26 @@ def _default_org() -> Org:
                 basic_question="무엇을 보면 됐다고 할 수 있나",
                 hired="2026-10-28",
                 reason="검증과 테스트 진단 (ADR-007)",
+            ),
+            "epsilon": AgentSpec(
+                display="Epsilon",
+                team="dev",
+                title="팀원",
+                mbti="ISTP",
+                perspective="승인된 설계를 그대로 작게 구현하기, 동작하는 코드, 빠진 테스트",
+                basic_question="설계대로 동작하는가, 테스트로 보여 줄 수 있는가",
+                hired="2026-10-28",
+                reason="구현·수정 실행 (ADR-008)",
+            ),
+            "zeta": AgentSpec(
+                display="Zeta",
+                team="qa",
+                title="팀원",
+                mbti="INTP",
+                perspective="재현 조건, 원인을 끝까지 좁히기, 근거 위치(파일:줄, 로그)",
+                basic_question="왜 실패하는가, 다시 일으킬 수 있는가",
+                hired="2026-10-28",
+                reason="버그·정기 테스트 실패 진단 (ADR-008)",
             ),
         },
     )
