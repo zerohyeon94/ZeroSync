@@ -998,7 +998,7 @@ Zero가 회사 재정의 1~5단계([docs/회사/](회사/README.md))에서 정�
 |---|---|---|
 | 0 | 문서 정비: 운영 규약, ADR-005, AGENTS.md, 스키마, SPEC.md | 완료 |
 | 1 | MVP: 포럼 게시글 감지 → Beta·Alpha 의견 병렬 게시 | 완료 (2026-10-11 실제 서버에서 한 사이클 확인) |
-| 2 | 워크플로 (ADR-005 기준): 상태 머신 전체, 승인 명령, 리뷰 루프, 테스트 실행, Issue·PR, /stop | 구현 (`feat/0-phase2-workflow`). 회사 재정의 문서가 merge된 뒤 develop을 합치고, 가게씨 실제 사이클 한 번으로 엔진 부품(테스트 실행, GitHub, worktree)을 확인하고 PR을 연다 |
+| 2 | 워크플로 (ADR-005 기준): 상태 머신 전체, 승인 명령, 리뷰 루프, 테스트 실행, Issue·PR, /stop | 구현 (`feat/0-phase2-workflow`). 2026-10-28 가게씨 실제 사이클(작업 5, Issue #34)로 의견·결정·Issue·설계·승인·구현·worktree·push를 확인. 테스트 실행 이후(리뷰, draft PR, merge 감지)는 맥의 시뮬레이터 설치 뒤 `/resume`으로 확인한다. 테스트 환경 오류를 NEEDS_HUMAN으로 보내는 수정 포함 |
 | 3 | 조직: 비공개 회사 저장소 경로, `org.yaml`(부서·팀·에이전트)·인격 파일 로더, Beta·Gamma·Alpha·Delta, 에이전트별 엔진·모델(모두 Claude), 표시 이름 `[이름 · 직책]`, 리뷰 담당을 Delta(새 세션·읽기 전용)로, `hiring_proposal`·`/hire` | 미시작 |
 | 4 | 운영화: launchd, 요청 대기열(우선순위, 동시 실행 1개), 일정 실행기, `#대표실` 아침·주간 보고, 팀장별 일일 예산, 사용량 한도 정지(V15), 재멘션, 대시보드 확장(9.3-1) | 미시작 |
 | 5 | 채팅과 기능 개발 흐름: 제품 채팅 채널과 대화, `/task`·`/debate`·`/idea` 입력, 파이프라인 YAML 로더와 규칙 검사(R1~R5, `when`), 기능 개발을 `pipelines/feature.yaml`로 이전(PLANNING, 화면 디자인, Alpha 설계·구현, Delta 검증), Claude 디자인 확인(V14), 흐름별 예산, 볼트·DOC_SYNC | 미시작 |
