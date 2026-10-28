@@ -11,6 +11,7 @@ from bot.agents.base import RunStatus, Stage
 from bot.clock import FixedClock
 from bot.dashboard import queries
 from bot.dashboard.server import DashboardSettings, handle
+from bot.org import DEFAULT_ORG
 from bot.store import INVALID_OUTPUT, Actor, EventKind, NewEvent, Repository, connect
 from bot.workflow.state import TaskState
 
@@ -216,6 +217,35 @@ def test_phase2_events_are_rendered(settings):
     assert "PR #43 merge 감지" in body
 
 
+def test_team_stage_events_are_rendered(settings):
+    """기획·진단·팀장 확인 이벤트가 날 데이터가 아니라 Discord와 같은 문구로 보인다."""
+    review = {"verdict": "APPROVED", "summary": "설계대로다", "findings": []}
+    diagnosis = {
+        "summary": "날짜 의존 테스트",
+        "reproduction": ["토요일 다음 날 실행"],
+        "cause": "test",
+        "evidence": ["Tests.swift:10"],
+        "fix_direction": "기준 날짜를 고정한다",
+        "confidence": "high",
+    }
+
+    async def add():
+        conn = await connect(settings.db)
+        repo = Repository(conn, FixedClock(T0))
+        try:
+            await repo.add_event(1, NewEvent("zeta", EventKind.DIAGNOSIS, {"report": diagnosis}))
+            payload = {"review": review, "round": 1, "stage": "diagnose", "lead": "delta"}
+            await repo.add_event(1, NewEvent("delta", EventKind.LEAD_CHECK, payload))
+        finally:
+            await conn.close()
+
+    asyncio.run(add())
+    _, body = get(settings, "/tasks/1")
+    assert "기준 날짜를 고정한다" in body and "{&#x27;" not in body
+    assert "진단 팀장 확인 1회: 통과" in body
+    assert "Zeta · QA팀원" in body and "팀장 확인" in body
+
+
 def test_home_overview_puts_zero_todo_first(settings):
     from dataclasses import replace
     from datetime import timedelta
@@ -243,3 +273,38 @@ def test_overview_works_on_old_schema_without_new_tables(settings):
     raw.close()
     status, body = get(settings, "/")
     assert status is HTTPStatus.OK and "Zero가 할 일" in body
+
+
+def test_team_page_shows_status_jobs_and_persona(settings):
+    """직원 화면: 팀별 팀장 먼저, 일하는 중·쉬는 중, 맡은 일, 인격 파일 (ADR-008)."""
+    from dataclasses import replace
+
+    from bot.pipeline import default_pipelines
+
+    async def add():
+        conn = await connect(settings.db)
+        repo = Repository(conn, FixedClock(T0))
+        try:
+            await repo.start_agent_run("r-eps", task_id=1, agent="epsilon", stage=Stage.IMPLEMENT)
+        finally:
+            await conn.close()
+
+    asyncio.run(add())
+    org = DEFAULT_ORG.model_copy(update={"profiles": {"zeta": "# Zeta <성격>"}})
+    team = replace(
+        settings,
+        org=org,
+        pipelines=default_pipelines(),
+        daily_calls={"epsilon": 30},
+        now=lambda: T0,
+    )
+    status, body = get(team, "/team")
+    assert status is HTTPStatus.OK
+    assert body.index("Alpha · 개발팀장") < body.index("Epsilon · 개발팀원")
+    epsilon = body[body.index('id="epsilon"') : body.index('id="delta"')]
+    assert "일하는 중" in epsilon and "구현" in epsilon and "1 / 30" in epsilon
+    assert "기능 개발 · 구현" in epsilon
+    alpha = body[body.index('id="alpha"') : body.index('id="epsilon"')]
+    assert "쉬는 중" in alpha and "기능 개발 · 구현 (확인)" in alpha
+    assert "# Zeta &lt;성격&gt;" in body  # 인격 파일은 이스케이프해 보인다
+    assert "6명 중 1명이 일하는 중" in body

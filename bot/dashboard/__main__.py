@@ -25,6 +25,8 @@ def main(argv: list[str] | None = None) -> int:
             for name, spec in config.org.agents.items()
             if spec.daily_calls is not None
         },
+        org=config.org,
+        pipelines=config.pipelines,
     )
     server = serve(settings, args.port)
     print(f"대시보드: http://{HOST}:{args.port}  (종료: Ctrl-C)", file=sys.stderr)

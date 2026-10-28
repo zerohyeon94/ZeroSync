@@ -7,6 +7,7 @@
 import json
 import sqlite3
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -197,9 +198,13 @@ def list_runs(
     project: str | None = None,
     status: str | None = None,
     task_id: int | None = None,
+    agent: str | None = None,
     limit: int = 200,
 ) -> list[RunRow]:
     where, params = [], []
+    if agent:
+        where.append("r.agent = ?")
+        params.append(agent)
     if project:
         where.append("t.project = ?")
         params.append(project)
@@ -217,6 +222,42 @@ def list_runs(
 def get_run(conn: sqlite3.Connection, run_id: str) -> RunRow | None:
     row = conn.execute(_RUN_SELECT + " WHERE r.id = ?", (run_id,)).fetchone()
     return None if row is None else _run(row)
+
+
+@dataclass(frozen=True)
+class AgentActivity:
+    """직원 한 명의 지금 일과 최근 기록 (직원 화면)."""
+
+    running: list[RunRow]
+    today: int
+    week: dict[str, int]  # 최근 7일 결과별 실행 수
+    recent: list[RunRow]
+
+
+def agent_activity(
+    conn: sqlite3.Connection, agents: Sequence[str], *, today_start: str, week_start: str
+) -> dict[str, AgentActivity]:
+    activity = {}
+    for agent in agents:
+        today = conn.execute(
+            "SELECT COUNT(*) FROM agent_runs WHERE agent = ? AND started_at >= ?",
+            (agent, today_start),
+        ).fetchone()[0]
+        week = {
+            row["status"]: row["n"]
+            for row in conn.execute(
+                "SELECT status, COUNT(*) AS n FROM agent_runs "
+                "WHERE agent = ? AND started_at >= ? GROUP BY status",
+                (agent, week_start),
+            )
+        }
+        activity[agent] = AgentActivity(
+            running=list_runs(conn, agent=agent, status="running", limit=10),
+            today=today,
+            week=week,
+            recent=list_runs(conn, agent=agent, limit=5),
+        )
+    return activity
 
 
 @dataclass(frozen=True)
