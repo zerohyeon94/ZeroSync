@@ -34,6 +34,7 @@ ZeroSync는 Discord 기반 멀티 에이전트 오케스트레이터(v2)이자 Z
 | `bot/prompts/` | 단계별 프롬프트 템플릿(`.md`)과 렌더링 함수 | 의견·반박·설계·구현·수정·리뷰 구현 |
 | `bot/render/` | 스키마 → 사람이 읽는 텍스트 (Discord·Issue·PR·볼트 공용) | 의견·안내·Issue·설계·테스트·리뷰·PR 구현 |
 | `bot/clock.py` | 현재 시각 인터페이스 (테스트에서 고정) | 구현 |
+| `bot/org.py` | 회사 조직 설정(`org.yaml`, 인격 파일) 로더. 에이전트 이름과 엔진 분리, 단계별 담당, R1 검사. 없으면 ADR-007 기본 조직. 예시는 `examples/company/` | 구현 |
 | `bot/config.py` | `bot/projects.yaml` + `.env` 로더 (pydantic 검증). 예시는 `bot/projects.example.yaml`, `.env.example` | 구현 |
 | `bot/locks.py` | 단일 인스턴스 락 (`flock`) | 구현 (빌드 락은 Phase 2) |
 | `bot/dashboard/` | 로컬 웹 대시보드. `python -m bot.dashboard` → http://127.0.0.1:8765. DB 읽기 전용 | 구현 |
