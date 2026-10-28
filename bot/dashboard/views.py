@@ -35,10 +35,15 @@ STATUS_LABELS = {
 STAGE_LABELS = {
     "opinion": "의견",
     "debate": "반박",
+    "plan": "기획",
+    "ui_design": "화면 디자인",
     "design": "설계",
+    "diagnose": "진단",
     "implement": "구현",
     "fix": "수정",
+    "lead_check": "팀장 확인",
     "review": "리뷰",
+    "release_prep": "출시 준비",
     "doc_sync": "문서 반영",
 }
 KIND_LABELS = {
@@ -47,12 +52,19 @@ KIND_LABELS = {
     "debate": "반박",
     "decision": "결정",
     "command": "명령",
+    "plan": "기획",
+    "ui_design": "화면 디자인",
     "design": "설계",
+    "diagnosis": "진단",
     "impl": "구현",
     "fix": "수정",
+    "lead_check": "팀장 확인",
     "test": "테스트",
     "review": "리뷰",
     "merge": "merge",
+    "doc_sync": "문서 반영",
+    "release": "출시 준비",
+    "report": "보고",
     "error": "오류",
 }
 _BAD_STATUSES = {"invalid_output", "timeout", "error"}
@@ -391,7 +403,11 @@ def _event_body(event: EventRow) -> str:
         head = f"<strong>{_e(title)}</strong>\n" if title else ""
         return f"<pre>{head}{_e(payload.get('text', ''))}</pre>"
     if event.kind == "decision":
-        return f"<pre>/decide {_e(payload.get('text', ''))}</pre>"
+        # ADR-007부터 작업은 채팅의 /task로 시작한다. 시작 명령은 기록에 없으므로 원문만 보인다
+        text = payload.get("text", "")
+        context = str(payload.get("context", "")).strip()
+        extra = f"\n\n채팅 의견 요약:\n{context}" if context else ""
+        return f"<pre>{_e(text)}{_e(extra)}</pre>"
     if event.kind == "command":
         return f"<pre>/{_e(payload.get('name', ''))} {_e(payload.get('arg', ''))}</pre>"
     rendered = _work_event(event.kind, payload)
@@ -406,19 +422,50 @@ def _event_body(event: EventRow) -> str:
 
 
 def _work_event(kind: str, payload: dict[str, Any]) -> str | None:
-    """Phase 2 이벤트를 Discord·PR과 같은 문구로 보여 준다."""
+    """흐름 단계 이벤트를 Discord·PR과 같은 문구로 보여 준다."""
     from bot.render.work import (
         render_design,
+        render_diagnosis,
+        render_doc_sync,
         render_implementation,
+        render_lead_check,
+        render_plan,
+        render_release_prep,
         render_review,
         render_test_report,
+        render_ui_design,
     )
-    from bot.schemas import DesignSummary, ImplementationReport, Review
+    from bot.schemas import (
+        DesignSummary,
+        DiagnosisReport,
+        DocSyncProposal,
+        ImplementationReport,
+        PlanSummary,
+        ReleasePrep,
+        Review,
+        UiDesignSummary,
+    )
     from bot.testrun import TestReport
 
     try:
+        if kind == "plan":
+            return render_plan(PlanSummary.model_validate(payload["summary"]))
+        if kind == "ui_design":
+            return render_ui_design(UiDesignSummary.model_validate(payload["summary"]))
         if kind == "design":
             return render_design(DesignSummary.model_validate(payload["summary"]))
+        if kind == "diagnosis":
+            return render_diagnosis(DiagnosisReport.model_validate(payload["report"]))
+        if kind == "lead_check":
+            review = Review.model_validate(payload["review"])
+            label = "진단" if payload.get("stage") == "diagnose" else "구현"
+            return render_lead_check(review, label=label, round_=payload.get("round", 0))
+        if kind == "doc_sync":
+            return render_doc_sync(DocSyncProposal.model_validate(payload["proposal"]))
+        if kind == "release":
+            return render_release_prep(ReleasePrep.model_validate(payload["prep"]))
+        if kind == "report":
+            return "보고 포스트를 열었다" if payload.get("posted") else "통과. 보고하지 않았다"
         if kind in ("impl", "fix"):
             report = ImplementationReport.model_validate(payload["report"])
             return render_implementation(report, heading="수정" if kind == "fix" else "구현")

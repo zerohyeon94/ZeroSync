@@ -216,6 +216,35 @@ def test_phase2_events_are_rendered(settings):
     assert "PR #43 merge 감지" in body
 
 
+def test_team_stage_events_are_rendered(settings):
+    """기획·진단·팀장 확인 이벤트가 날 데이터가 아니라 Discord와 같은 문구로 보인다."""
+    review = {"verdict": "APPROVED", "summary": "설계대로다", "findings": []}
+    diagnosis = {
+        "summary": "날짜 의존 테스트",
+        "reproduction": ["토요일 다음 날 실행"],
+        "cause": "test",
+        "evidence": ["Tests.swift:10"],
+        "fix_direction": "기준 날짜를 고정한다",
+        "confidence": "high",
+    }
+
+    async def add():
+        conn = await connect(settings.db)
+        repo = Repository(conn, FixedClock(T0))
+        try:
+            await repo.add_event(1, NewEvent("zeta", EventKind.DIAGNOSIS, {"report": diagnosis}))
+            payload = {"review": review, "round": 1, "stage": "diagnose", "lead": "delta"}
+            await repo.add_event(1, NewEvent("delta", EventKind.LEAD_CHECK, payload))
+        finally:
+            await conn.close()
+
+    asyncio.run(add())
+    _, body = get(settings, "/tasks/1")
+    assert "기준 날짜를 고정한다" in body and "{&#x27;" not in body
+    assert "진단 팀장 확인 1회: 통과" in body
+    assert "Zeta · QA팀원" in body and "팀장 확인" in body
+
+
 def test_home_overview_puts_zero_todo_first(settings):
     from dataclasses import replace
     from datetime import timedelta
