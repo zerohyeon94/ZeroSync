@@ -7,7 +7,7 @@
 import asyncio
 import json
 import tempfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -136,10 +136,12 @@ class FakeTests:
 
 
 class Harness:
-    def __init__(self, conn, claude, codex, tmp, tests=None):
+    def __init__(self, conn, claude, codex, tmp, tests=None, org=LEGACY_ORG):
         self.conn = conn
         self.tmp = tmp
-        self.repo = Repository(conn, FixedClock(T0))
+        self.clock = FixedClock(T0)
+        self.slept = []
+        self.repo = Repository(conn, self.clock)
         self.chat = FakeChatIO()
         self.claude, self.codex = claude, codex
         self.github = FakeGitHub(repo="zerohyeon94/GagaeSsi")
@@ -161,17 +163,24 @@ class Harness:
                 )
             },
             timeout_sec=60,
-            org=LEGACY_ORG,
+            org=org,
             git=self.git,
             tests=self.tests,
             worktrees_dir=tmp / "worktrees",
             thread_url=lambda thread: f"https://discord.com/channels/1/{thread}",
+            clock=self.clock,
+            sleep=self.sleep,
         )
         # 가짜 Beta 응답이 같은 FakeGit에 커밋을 쌓게 한다
         for runner in (claude, codex):
             for response in getattr(runner, "_responses", []):
                 if getattr(response, "git", "unset") is None:
                     response.git = self.git
+
+    async def sleep(self, seconds):
+        # 실제로 기다리지 않고 시계만 넘긴다
+        self.slept.append(seconds)
+        self.clock.advance(timedelta(seconds=seconds))
 
     async def post(self, text="예산 초과 시 배너를 띄우자"):
         return await self.engine.on_post(
@@ -190,7 +199,7 @@ class Harness:
         return sorted(tuple(row) for row in rows)
 
 
-def scenario(claude=(), codex=(), tests=None):
+def scenario(claude=(), codex=(), tests=None, org=LEGACY_ORG):
     """claude·codex 응답 목록으로 Harness를 만들어 시나리오 함수를 실행한다."""
 
     def wrap(body):
@@ -204,6 +213,7 @@ def scenario(claude=(), codex=(), tests=None):
                         FakeAgentRunner("codex", codex),
                         Path(tmp),
                         FakeTests(tests or ()),
+                        org,
                     )
                     return await body(h)
                 finally:
@@ -845,3 +855,52 @@ def test_rejected_proposal_goes_into_later_prompts_and_cannot_be_decided_twice()
         assert "Zero가 거절한 제안" in beta_prompt and "아직 화면 작업이 적다" in beta_prompt
         # 거절 이력은 제안한 팀장에게만 들어간다
         assert "Zero가 거절한 제안" not in h.codex.requests[-1].prompt
+
+
+# 대기열, 하루 예산, 사용량 한도 (ADR-007)
+
+
+def limited_org(daily_calls):
+    beta = LEGACY_ORG.agents["beta"].model_copy(update={"daily_calls": daily_calls})
+    return LEGACY_ORG.model_copy(update={"agents": {**LEGACY_ORG.agents, "beta": beta}})
+
+
+def test_daily_budget_blocks_agent_and_alerts_ops():
+    @scenario(claude=[opinion("첫 의견")], codex=[opinion("a"), opinion("b")], org=limited_org(1))
+    async def result(h):
+        await h.post()
+        await h.engine.on_message(THREAD, "한 번 더")
+        # Beta는 오늘 1회를 썼다. 두 번째는 CLI를 부르지 않는다
+        assert len(h.claude.requests) == 1 and len(h.codex.requests) == 2
+        notice = [p for p in h.chat.posts if p.author == "bot"][-1]
+        assert "오늘 호출 한도 1회를 넘었다" in notice.text
+        assert any("오늘 호출 한도" in text for text, _ in h.chat.ops)
+
+
+def test_budget_resets_on_the_next_local_day():
+    @scenario(claude=[opinion("1"), opinion("2")], codex=[opinion("a"), opinion("b")],
+              org=limited_org(1))  # fmt: skip
+    async def result(h):
+        await h.post()
+        h.clock.advance(timedelta(days=1))
+        await h.engine.on_message(THREAD, "다음 날 질문")
+        assert len(h.claude.requests) == 2
+
+
+def usage_limited():
+    return AgentResult(
+        RunStatus.ERROR, 1, "", "Claude usage limit reached", None, 1.0, Path("runs/u.log")
+    )
+
+
+def test_usage_limit_pauses_queue_and_retries_once():
+    @scenario(claude=[usage_limited(), opinion("다시 성공")], codex=[opinion("a")])
+    async def result(h):
+        await h.post()
+        # 1시간 정지 뒤 같은 요청을 다시 실행해 의견이 게시됐다
+        assert len(h.claude.requests) == 2
+        assert sum(h.slept) >= 3600
+        assert await h.repo.get_state("queue_paused_until") is None
+        assert any("사용량 한도" in text and mention for text, mention in h.chat.ops)
+        assert any("다시 시작" in text for text, _ in h.chat.ops)
+        assert [p.author for p in h.chat.posts] == ["beta", "alpha"]

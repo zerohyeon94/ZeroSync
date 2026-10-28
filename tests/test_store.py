@@ -81,7 +81,7 @@ def test_connect_creates_schema_and_file(tmp_path):
 
     version, tables, fk = run(scenario())
     assert path.exists()
-    assert version == SCHEMA_VERSION == 4
+    assert version == SCHEMA_VERSION == 5
     assert {"tasks", "events", "agent_runs"} <= tables
     assert fk == 1
 
@@ -336,7 +336,7 @@ def test_v1_database_is_upgraded_with_defaults(tmp_path):
             await conn.close()
 
     version, task = run(scenario())
-    assert version == 4
+    assert version == SCHEMA_VERSION
     assert (task.review_limit_bonus, task.test_limit_bonus, task.recommended_fixed) == (0, 0, 0)
 
 
@@ -369,3 +369,23 @@ def test_v2_runs_get_engine_from_legacy_agent_name(tmp_path):
 
     record = run(scenario())
     assert (record.agent, record.engine) == ("codex", "codex")
+
+
+def test_bot_state_and_schedule_runs(tmp_path):
+    async def scenario():
+        conn, repo = await open_repo(tmp_path / "s.db")
+        try:
+            assert await repo.get_state("k") is None
+            await repo.set_state("k", "1")
+            await repo.set_state("k", "2")
+            value = await repo.get_state("k")
+            await repo.set_state("k", None)
+            await repo.record_schedule_run("morning_report", "2026-10-28T00:00:00+00:00")
+            await repo.record_schedule_run("morning_report", "2026-10-29T00:00:00+00:00")
+            return value, await repo.get_state("k"), await repo.schedule_runs()
+        finally:
+            await conn.close()
+
+    value, cleared, runs = run(scenario())
+    assert (value, cleared) == ("2", None)
+    assert runs == {"morning_report": "2026-10-29T00:00:00+00:00"}

@@ -83,7 +83,21 @@ CREATE TABLE hiring_proposals (
 );
 """
 
-MIGRATIONS: tuple[str, ...] = (_V1, _V2, _V3, _V4)
+# v5: 봇 전체 상태(사용량 한도 정지 등)와 일정 실행 기록 (ADR-007, SPEC 6.6)
+_V5 = """
+CREATE TABLE bot_state (
+  key              TEXT PRIMARY KEY,
+  value            TEXT NOT NULL,
+  updated_at       TEXT NOT NULL
+);
+CREATE TABLE schedule_runs (
+  job              TEXT PRIMARY KEY,
+  last_run_at      TEXT NOT NULL
+);
+CREATE INDEX agent_runs_agent ON agent_runs(agent, started_at);
+"""
+
+MIGRATIONS: tuple[str, ...] = (_V1, _V2, _V3, _V4, _V5)
 SCHEMA_VERSION = len(MIGRATIONS)
 
 

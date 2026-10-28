@@ -439,6 +439,45 @@ class Repository:
         )
         return {row["status"]: row["n"] for row in rows}
 
+    async def count_agent_runs_since(self, agent: str, since: str) -> int:
+        """since(UTC ISO) 이후 시작한 이 에이전트의 실행 수. 하루 예산 검사에 쓴다 (SPEC Q18)."""
+        row = await self._fetchone(
+            "SELECT COUNT(*) AS n FROM agent_runs WHERE agent = ? AND started_at >= ?",
+            (agent, since),
+        )
+        return int(row["n"]) if row is not None else 0
+
+    # bot_state, schedule_runs
+
+    async def get_state(self, key: str) -> str | None:
+        row = await self._fetchone("SELECT value FROM bot_state WHERE key = ?", (key,))
+        return None if row is None else str(row["value"])
+
+    async def set_state(self, key: str, value: str | None) -> None:
+        """value가 None이면 지운다."""
+        async with self._transaction():
+            if value is None:
+                await self._conn.execute("DELETE FROM bot_state WHERE key = ?", (key,))
+            else:
+                await self._conn.execute(
+                    "INSERT INTO bot_state (key, value, updated_at) VALUES (?, ?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
+                    "updated_at = excluded.updated_at",
+                    (key, value, self._now()),
+                )
+
+    async def schedule_runs(self) -> dict[str, str]:
+        rows = await self._fetchall("SELECT job, last_run_at FROM schedule_runs", ())
+        return {row["job"]: row["last_run_at"] for row in rows}
+
+    async def record_schedule_run(self, job: str, at: str) -> None:
+        async with self._transaction():
+            await self._conn.execute(
+                "INSERT INTO schedule_runs (job, last_run_at) VALUES (?, ?) "
+                "ON CONFLICT(job) DO UPDATE SET last_run_at = excluded.last_run_at",
+                (job, at),
+            )
+
     async def count_errors(self) -> int:
         """기록된 오류 이벤트 수 (단계 실패, 형식 오류, 재시작 중단 등)."""
         row = await self._fetchone("SELECT COUNT(*) AS n FROM events WHERE kind = 'error'", ())

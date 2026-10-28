@@ -9,6 +9,7 @@
 import asyncio
 import logging
 from collections.abc import Coroutine, Mapping
+from datetime import timedelta
 from typing import Any
 
 import discord
@@ -28,7 +29,8 @@ from bot.discord_io.rules import (
 from bot.github import GitHubClient
 from bot.render.status import render_ping, render_status
 from bot.store import Repository
-from bot.workflow.engine import Engine, ProjectContext
+from bot.workflow.engine import PAUSE_KEY, Engine, ProjectContext
+from bot.workflow.gate import AgentGate
 from bot.workflow.mentions import Moment, should_mention
 from bot.workflow.state import CommandName, Limits, TaskState
 
@@ -97,6 +99,9 @@ class ZeroSyncBot(discord.Client):
             ),
             worktrees_dir=config.paths.worktrees,
             thread_url=self.thread_url,
+            clock=self.clock,
+            gate=AgentGate(config.limits.concurrent_agents),
+            usage_pause=timedelta(minutes=config.limits.usage_pause_minutes),
         )
         self._webhooks: dict[int, discord.Webhook] = {}
         self._background: set[asyncio.Task[None]] = set()
@@ -269,7 +274,13 @@ class ZeroSyncBot(discord.Client):
             return
         running = await self.repo.list_running_agent_runs()
         active = await self.repo.list_tasks(ACTIVE_STATES)
-        text = render_ping(running_cli=len(running), active_tasks=len(active))
+        paused = await self.repo.get_state(PAUSE_KEY) or ""
+        text = render_ping(
+            running_cli=len(running),
+            active_tasks=len(active),
+            waiting=self.engine.waiting,
+            paused=paused,
+        )
         await interaction.response.send_message(text, ephemeral=True)
 
     async def run_hire(

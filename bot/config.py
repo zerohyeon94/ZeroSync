@@ -147,6 +147,10 @@ class LimitsConfig(_Model):
     max_test_retries: int = Field(default=2, ge=0)
     cli_timeout_sec: int = Field(default=3600, ge=1)
     concurrent_builds: int = Field(default=1, ge=1)
+    # 에이전트 CLI 동시 실행 수 (ADR-007: 한 번에 하나)
+    concurrent_agents: int = Field(default=1, ge=1)
+    # 구독 사용량 한도에 걸렸을 때 대기열을 멈추는 시간 [검증 필요] (SPEC V15)
+    usage_pause_minutes: int = Field(default=60, ge=1)
     merge_poll_sec: int = Field(default=300, ge=1)
     remind_after_hours: int = Field(default=24, ge=1)
 

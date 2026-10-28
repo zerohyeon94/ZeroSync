@@ -149,12 +149,12 @@ class WorkStages:
         """에이전트 단계 실패. 원문이나 실패 안내를 게시하고 NEEDS_HUMAN으로 보낸다 (SPEC 3.3)."""
         name = self._name(answer.agent)
         if answer.failed_to_run:
-            reason = f"{name} {stage} 실행 실패 ({answer.status})"
+            reason = f"{name} {stage} 실행 실패 ({answer.failure})"
             await self._say(
-                task, render_notice(NoticeCode.AGENT_FAILED, f"[{name}] {answer.status}")
+                task, render_notice(NoticeCode.AGENT_FAILED, f"[{name}] {answer.failure}")
             )
             await self._chat.notify_ops(
-                f"[{task.project}] 작업 {task.id} {name} {stage} 실행 실패: {answer.status}. "
+                f"[{task.project}] 작업 {task.id} {name} {stage} 실행 실패: {answer.failure}. "
                 f"로그: {answer.log_path}",
                 mention=should_mention(Moment.BOT_ERROR),
             )

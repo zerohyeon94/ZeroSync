@@ -198,7 +198,10 @@ def test_render_status_and_ping():
         "리뷰 라운드: 2\n테스트 재시도: 1\n마지막 변경 후: 2시간 5분"
     )
     assert render_ping(running_cli=1, active_tasks=2) == (
-        "살아 있다. 실행 중 CLI 1개, 진행 중 작업 2개."
+        "살아 있다. 실행 중 CLI 1개, 대기 0개, 진행 중 작업 2개."
+    )
+    assert "10-28 09:00까지 대기열을 멈췄다" in render_ping(
+        running_cli=0, active_tasks=0, waiting=3, paused="10-28 09:00"
     )
 
 

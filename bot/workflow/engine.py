@@ -13,16 +13,28 @@ Discord 계층이 넘긴 입력(게시글, 메시지, 명령)으로 전이를 �
 
 import asyncio
 import logging
+import re
 import unicodedata
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel
 
-from bot.agents.base import AgentName, AgentRequest, AgentRunner, EngineName, Mode, RunStatus, Stage
+from bot.agents.base import (
+    AgentName,
+    AgentRequest,
+    AgentResult,
+    AgentRunner,
+    EngineName,
+    Mode,
+    RunStatus,
+    Stage,
+)
+from bot.clock import Clock, SystemClock, from_iso, to_iso
 from bot.org import DEFAULT_ORG, Org
 from bot.prompts import (
     HistoryEntry,
@@ -47,6 +59,7 @@ from bot.store import (
 )
 from bot.store.repo import StaleStateError, TaskRecord
 from bot.workflow.chat import Attachment, Author, ChatIO
+from bot.workflow.gate import AgentGate, Priority
 from bot.workflow.mentions import Moment, should_mention
 from bot.workflow.state import (
     ApplyTypeLabel,
@@ -86,6 +99,23 @@ from bot.workflow.work import WorkStages
 log = logging.getLogger(__name__)
 
 M = TypeVar("M", bound=BaseModel)
+
+# Zero의 말에 바로 답하는 단계. 대기열에서 먼저 꺼낸다 (ADR-007)
+_ZERO_FACING = frozenset({Stage.OPINION, Stage.DEBATE})
+# 구독 사용량 한도 오류로 보는 문구 [검증 필요] (SPEC V15)
+_USAGE_LIMIT = re.compile(
+    r"usage limit|rate limit|limit reached|too many requests|quota exceeded|\b429\b", re.I
+)
+PAUSE_KEY = "queue_paused_until"
+
+
+def is_usage_limited(result: AgentResult) -> bool:
+    """CLI가 구독 사용량 한도로 실패했는지. 성공한 실행은 보지 않는다."""
+    if result.status is RunStatus.OK:
+        return False
+    return bool(_USAGE_LIMIT.search(f"{result.stdout}\n{result.stderr}"))
+
+
 Outcome = tuple[Event, NewEvent]
 Verify = Callable[[Any], Awaitable[list[str]]]
 
@@ -128,10 +158,15 @@ class _Answer(Generic[M]):
     status: RunStatus = RunStatus.OK
     log_path: str = ""
     session_id: str | None = None
+    blocked: str = ""  # 실행하지 않은 이유 (하루 예산 초과 등)
 
     @property
     def failed_to_run(self) -> bool:
-        return self.status is not RunStatus.OK
+        return self.status is not RunStatus.OK or bool(self.blocked)
+
+    @property
+    def failure(self) -> str:
+        return self.blocked or str(self.status)
 
     @property
     def opinion(self) -> Any:
@@ -167,6 +202,10 @@ class Engine(WorkStages):
         limits: Limits | None = None,
         worktrees_dir: Path | None = None,
         thread_url: Callable[[str], str | None] | None = None,
+        clock: Clock | None = None,
+        gate: AgentGate | None = None,
+        usage_pause: timedelta = timedelta(hours=1),
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ):
         self._repo = repo
         self._chat = chat
@@ -182,6 +221,15 @@ class Engine(WorkStages):
         self._thread_url = thread_url or (lambda thread: None)
         self._task_locks: dict[int, asyncio.Lock] = {}
         self._running = _Running()
+        self._clock = clock or SystemClock()
+        self._gate = gate or AgentGate()
+        self._usage_pause = usage_pause
+        self._sleep = sleep
+
+    @property
+    def waiting(self) -> int:
+        """대기열에서 차례를 기다리는 에이전트 실행 수."""
+        return self._gate.waiting
 
     # 입력
 
@@ -512,6 +560,90 @@ class Engine(WorkStages):
         agent: AgentName,
         stage: Stage,
         prompt: str,
+        **call: Any,
+    ) -> _Answer[Any]:
+        """대기열에서 차례를 받아 한 번 실행한다 (ADR-007: 한 번에 하나, 하루 예산, 한도 정지)."""
+        priority: Priority = (
+            0 if stage in _ZERO_FACING else 1,
+            self._project_rank(task.project),
+            task.id,
+        )
+        async with self._gate.slot(priority):
+            current = await self._repo.get_task(task.id)
+            if current.state.is_terminal:
+                # 기다리는 사이 /stop됐다. 호출하지 않는다
+                return _Answer(agent, None, status=RunStatus.CANCELLED)
+            await self._wait_if_paused()
+            blocked = await self._over_budget(agent)
+            if blocked:
+                await self._chat.notify_ops(
+                    f"[{task.project}] 작업 {task.id}: {blocked}",
+                    mention=should_mention(Moment.NEEDS_HUMAN),
+                )
+                return _Answer(agent, None, status=RunStatus.ERROR, blocked=blocked)
+            answer, limited = await self._run_once(task, agent, stage, prompt, **call)
+            if limited:
+                # 한도가 풀리면 같은 요청을 한 번 다시 실행한다
+                await self._pause_for_usage(task, agent)
+                await self._wait_if_paused()
+                answer, _ = await self._run_once(task, agent, stage, prompt, **call)
+            return answer
+
+    def _project_rank(self, project: str) -> int:
+        # 제품 순서 = 설정의 프로젝트 순서 (가게씨 → 제이데이 → 오롯, ADR-007)
+        keys = list(self._projects)
+        return keys.index(project) if project in keys else len(keys)
+
+    def _day_start(self) -> str:
+        """이 맥 시간대의 오늘 0시 (UTC ISO). 하루 예산의 기준이다."""
+        local = self._clock.now().astimezone()
+        return to_iso(local.replace(hour=0, minute=0, second=0, microsecond=0))
+
+    async def _over_budget(self, agent: AgentName) -> str:
+        spec = self._org.agents.get(agent)
+        limit = spec.daily_calls if spec is not None else None
+        if limit is None:
+            return ""
+        used = await self._repo.count_agent_runs_since(agent, self._day_start())
+        if used < limit:
+            return ""
+        return f"{self._name(agent)}의 오늘 호출 한도 {limit}회를 넘었다"
+
+    async def _paused_until(self) -> datetime | None:
+        value = await self._repo.get_state(PAUSE_KEY)
+        return from_iso(value) if value else None
+
+    async def _wait_if_paused(self) -> None:
+        while True:
+            until = await self._paused_until()
+            if until is None:
+                return
+            remaining = (until - self._clock.now()).total_seconds()
+            if remaining <= 0:
+                await self._repo.set_state(PAUSE_KEY, None)
+                await self._chat.notify_ops(
+                    "사용량 한도 정지가 끝나 대기열을 다시 시작한다.",
+                    mention=should_mention(Moment.NOTICE),
+                )
+                return
+            await self._sleep(min(remaining, 60.0))
+
+    async def _pause_for_usage(self, task: TaskRecord, agent: AgentName) -> None:
+        until = self._clock.now() + self._usage_pause
+        await self._repo.set_state(PAUSE_KEY, to_iso(until))
+        local = until.astimezone().strftime("%m-%d %H:%M")
+        await self._chat.notify_ops(
+            f"[{task.project}] 작업 {task.id}: {self._name(agent)} 실행이 구독 사용량 한도에 "
+            f"걸렸다. 대기열을 {local}까지 멈추고 그 뒤 다시 실행한다.",
+            mention=should_mention(Moment.BOT_ERROR),
+        )
+
+    async def _run_once(
+        self,
+        task: TaskRecord,
+        agent: AgentName,
+        stage: Stage,
+        prompt: str,
         *,
         model: type[M],
         mode: Mode,
@@ -519,7 +651,8 @@ class Engine(WorkStages):
         context: dict[str, Any] | None,
         resume: str | None,
         verify: Verify | None,
-    ) -> _Answer[M]:
+    ) -> tuple[_Answer[M], bool]:
+        """CLI를 한 번 실행하고 검증한다. 두 번째 값은 사용량 한도로 실패했는지."""
         run_id = f"t{task.id}-{agent}-{stage.value}-{uuid.uuid4().hex[:8]}"
         await self._repo.start_agent_run(
             run_id, task_id=task.id, agent=agent, stage=stage, engine=self._org.engine(agent)
@@ -562,9 +695,10 @@ class Engine(WorkStages):
         await self._repo.finish_agent_run(
             run_id, status=status, exit_code=result.exit_code, log_path=log_path
         )
-        return _Answer(
+        answer = _Answer(
             agent, parsed, result.stdout, error, result.status, log_path, result.session_id
         )
+        return answer, is_usage_limited(result)
 
     # 의견
 
@@ -673,16 +807,16 @@ class Engine(WorkStages):
             return _Outgoing(answer.agent, rendered.text, rendered.attachments, event)
         # CLI 실행 실패: [ZeroSync] 안내 + 운영 채널 알림 (운영 규약 2.5)
         name = self._name(answer.agent)
-        data = {**payload, "agent": answer.agent, "status": str(answer.status)}
+        data = {**payload, "agent": answer.agent, "status": answer.failure}
         alert = (
             f"[{task.project}] 작업 {task.id} {name} {kind.value} 실행 실패: "
-            f"{answer.status}. 로그: {answer.log_path}"
-            if answer.status is not RunStatus.CANCELLED
+            f"{answer.failure}. 로그: {answer.log_path}"
+            if answer.status is not RunStatus.CANCELLED and not answer.blocked
             else ""
         )
         return _Outgoing(
             "bot",
-            render_notice(NoticeCode.AGENT_FAILED, f"[{name}] {answer.status}"),
+            render_notice(NoticeCode.AGENT_FAILED, f"[{name}] {answer.failure}"),
             (),
             NewEvent(Actor.BOT, EventKind.ERROR, data),
             alert,
