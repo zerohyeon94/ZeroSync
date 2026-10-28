@@ -28,9 +28,11 @@ ZeroSync는 Discord 기반 멀티 에이전트 오케스트레이터(v2)이자 Z
 | `bot/schemas/` | 에이전트 출력 스키마(의견, 리뷰 판정, 설계 요약 일부)와 JSON 추출·검증 | 구현 |
 | `bot/agents/` | 에이전트 호출 인터페이스, 자식 프로세스 실행(타임아웃·취소·실행 로그), Claude·Codex CLI 러너, 테스트용 가짜 러너 | 구현 |
 | `bot/store/` | SQLite 연결·스키마 버전 관리, tasks·events·agent_runs 저장소 | 구현 |
-| `bot/workflow/` | 상태 enum과 전이 규칙(순수 함수), `ChatIO` 인터페이스, 멘션 규칙, 엔진. discord.py를 import하지 않는다 | OPINIONS 범위 구현 |
-| `bot/prompts/` | 단계별 프롬프트 템플릿(`.md`)과 렌더링 함수 | 의견·반박 구현 |
-| `bot/render/` | 스키마 → 사람이 읽는 텍스트 (Discord·Issue·PR·볼트 공용) | 의견·안내 구현 |
+| `bot/workflow/` | 상태 enum과 전이 규칙(순수 함수), `ChatIO` 인터페이스, 멘션 규칙, 엔진(`engine.py`)과 설계~merge 단계 작업(`work.py`). discord.py를 import하지 않는다 | Phase 2까지 구현 |
+| `bot/github/` | push 보호·커밋 메시지 규칙, git worktree 작업(`GitOps`), `gh` 연동(`GitHubClient`), 테스트용 가짜 | 구현 |
+| `bot/testrun.py` | 앱 테스트 명령 실행(전역 락)과 xcodebuild 결과 요약 | 구현 |
+| `bot/prompts/` | 단계별 프롬프트 템플릿(`.md`)과 렌더링 함수 | 의견·반박·설계·구현·수정·리뷰 구현 |
+| `bot/render/` | 스키마 → 사람이 읽는 텍스트 (Discord·Issue·PR·볼트 공용) | 의견·안내·Issue·설계·테스트·리뷰·PR 구현 |
 | `bot/clock.py` | 현재 시각 인터페이스 (테스트에서 고정) | 구현 |
 | `bot/config.py` | `bot/projects.yaml` + `.env` 로더 (pydantic 검증). 예시는 `bot/projects.example.yaml`, `.env.example` | 구현 |
 | `bot/locks.py` | 단일 인스턴스 락 (`flock`) | 구현 (빌드 락은 Phase 2) |

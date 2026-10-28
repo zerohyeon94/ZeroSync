@@ -37,6 +37,12 @@ KIND_LABELS = {
     "debate": "반박",
     "decision": "결정",
     "command": "명령",
+    "design": "설계",
+    "impl": "구현",
+    "fix": "수정",
+    "test": "테스트",
+    "review": "리뷰",
+    "merge": "merge",
     "error": "오류",
 }
 _BAD_STATUSES = {"invalid_output", "timeout", "error"}
@@ -273,12 +279,44 @@ def _event_body(event: EventRow) -> str:
         return f"<pre>/decide {_e(payload.get('text', ''))}</pre>"
     if event.kind == "command":
         return f"<pre>/{_e(payload.get('name', ''))} {_e(payload.get('arg', ''))}</pre>"
+    rendered = _work_event(event.kind, payload)
+    if rendered is not None:
+        return f"<pre>{_e(rendered.replace('**', ''))}</pre>"
     if event.kind == "error":
         parts = [f"{k}: {v}" for k, v in payload.items() if k not in ("raw",)]
         raw = payload.get("raw")
         extra = f"\n\n원문:\n{raw}" if raw else ""
         return f'<pre class="bad">{_e(chr(10).join(parts) + extra)}</pre>'
     return f"<pre>{_e(payload)}</pre>"
+
+
+def _work_event(kind: str, payload: dict[str, Any]) -> str | None:
+    """Phase 2 이벤트를 Discord·PR과 같은 문구로 보여 준다."""
+    from bot.render.work import (
+        render_design,
+        render_implementation,
+        render_review,
+        render_test_report,
+    )
+    from bot.schemas import DesignSummary, ImplementationReport, Review
+    from bot.testrun import TestReport
+
+    try:
+        if kind == "design":
+            return render_design(DesignSummary.model_validate(payload["summary"]))
+        if kind in ("impl", "fix"):
+            report = ImplementationReport.model_validate(payload["report"])
+            return render_implementation(report, heading="수정" if kind == "fix" else "구현")
+        if kind == "test":
+            return render_test_report(TestReport.from_payload(payload))
+        if kind == "review":
+            review = Review.model_validate(payload["review"])
+            return render_review(review, round_=payload.get("round", 0))
+        if kind == "merge":
+            return f"PR #{payload.get('pr')} merge 감지"
+    except (KeyError, ValueError):
+        return None
+    return None
 
 
 def task_page(

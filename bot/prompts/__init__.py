@@ -12,8 +12,10 @@ from functools import cache
 from pathlib import Path
 from string import Template
 
+from pydantic import BaseModel
+
 from bot.agents.base import AgentName
-from bot.schemas import Opinion
+from bot.schemas import DesignSummary, ImplementationReport, Opinion, Review
 
 PROMPTS_DIR = Path(__file__).resolve().parent
 
@@ -59,8 +61,8 @@ def _template(name: str) -> Template:
     return Template((PROMPTS_DIR / f"{name}.md").read_text(encoding="utf-8"))
 
 
-def _schema() -> str:
-    return json.dumps(Opinion.model_json_schema(), ensure_ascii=False)
+def _schema(model: type[BaseModel] = Opinion) -> str:
+    return json.dumps(model.model_json_schema(), ensure_ascii=False)
 
 
 def _history(entries: Sequence[HistoryEntry]) -> str:
@@ -139,4 +141,132 @@ def with_format_error(prompt: str, error: str) -> str:
         "## 이전 출력의 형식 오류\n\n"
         f"{error.strip()}\n\n"
         "위 오류를 고쳐 스키마에 맞는 JSON 객체 하나만 다시 출력한다.\n"
+    )
+
+
+# Phase 2: 설계, 구현, 수정, 리뷰
+
+
+def _persona(agent: AgentName) -> dict[str, str]:
+    persona = PERSONAS[agent]
+    return {"persona": persona.name, "perspective": persona.perspective}
+
+
+def _section(title: str, body: str) -> str:
+    return f"\n## {title}\n\n{body.strip()}\n" if body.strip() else ""
+
+
+def design_text(summary: DesignSummary) -> str:
+    """프롬프트에 넣는 설계 요약."""
+    lines = [
+        f"- 변경 유형: {summary.change_type.label} ({summary.change_type.value})",
+        f"- 대상 기능: {summary.target_feature}",
+        f"- 제목: {summary.conventional_title}",
+        f"- 요약: {summary.summary}",
+        "- 바꿀 것:",
+        *(f"  - {item}" for item in summary.changes),
+        "- 테스트 계획:",
+        *(f"  - {item}" for item in summary.test_plan),
+    ]
+    if summary.risks:
+        lines += ["- 위험:", *(f"  - {item}" for item in summary.risks)]
+    return "\n".join(lines)
+
+
+def design_prompt(
+    *,
+    title: str,
+    post: str,
+    decision: str,
+    issue: int,
+    features: Sequence[str] | None,
+    history: Sequence[HistoryEntry] = (),
+    revision: str = "",
+    previous: DesignSummary | None = None,
+) -> str:
+    if features is None:
+        feature_text = "(볼트 기능 폴더를 읽지 못했다. 기존 기능이면 그 이름을 그대로 쓴다)"
+    else:
+        feature_text = "\n".join(f"- {name}" for name in sorted(features)) or "(아직 없다)"
+    revision_text = ""
+    if revision:
+        body = f"Zero의 수정 요청:\n{revision.strip()}\n"
+        if previous is not None:
+            body += (
+                f"\n이전 설계 요약:\n{design_text(previous)}\n\n"
+                f"같은 파일(`{previous.design_doc}`)을 고쳐 새 커밋으로 추가한다. "
+                "slug나 변경 유형이 바뀌면 파일 이름도 새 slug로 옮긴다"
+            )
+        revision_text = _section("수정 요청", body)
+    return _template("design").substitute(
+        _persona("claude"),
+        title=title.strip(),
+        issue=issue,
+        post=post.strip(),
+        decision=decision.strip(),
+        history=_history(history),
+        features=feature_text,
+        revision=revision_text,
+        schema=_schema(DesignSummary),
+    )
+
+
+def implement_prompt(
+    *, title: str, decision: str, issue: int, branch: str, summary: DesignSummary
+) -> str:
+    return _template("implement").substitute(
+        _persona("claude"),
+        title=title.strip(),
+        issue=issue,
+        branch=branch,
+        decision=decision.strip(),
+        design_doc=summary.design_doc,
+        design=design_text(summary) + "\n",
+        schema=_schema(ImplementationReport),
+    )
+
+
+def fix_prompt(
+    *, title: str, issue: int, branch: str, summary: DesignSummary, problems: str
+) -> str:
+    return _template("fix").substitute(
+        _persona("claude"),
+        title=title.strip(),
+        issue=issue,
+        branch=branch,
+        design_doc=summary.design_doc,
+        problems=problems.strip(),
+        schema=_schema(ImplementationReport),
+    )
+
+
+def review_prompt(
+    *,
+    title: str,
+    decision: str,
+    issue: int,
+    round_: int,
+    summary: DesignSummary,
+    tests: str,
+    diff: str,
+    previous_required: str = "",
+) -> str:
+    previous = ""
+    if previous_required:
+        previous = _section(
+            "이전 라운드 [필수] 지적",
+            previous_required + "\n\n각 항목이 해결됐는지 확인한다. 등급을 낮춰 넘기지 않는다",
+        )
+    return _template("review").substitute(
+        _persona("codex"),
+        title=title.strip(),
+        issue=issue,
+        round=round_,
+        decision=decision.strip(),
+        design_doc=summary.design_doc,
+        design=design_text(summary),
+        tests=tests.strip(),
+        previous=previous,
+        diff=diff,
+        schema=_schema(Review),
     )

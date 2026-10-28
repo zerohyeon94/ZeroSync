@@ -38,6 +38,7 @@ class EventKind(StrEnum):
     FIX = "fix"
     DOC_SYNC = "doc_sync"
     COMMAND = "command"
+    MERGE = "merge"
     ERROR = "error"
 
 
@@ -55,6 +56,9 @@ UPDATABLE_FIELDS = frozenset(
         "claude_session",
         "waiting_since",
         "reminded_at",
+        "review_limit_bonus",
+        "test_limit_bonus",
+        "recommended_fixed",
     }
 )
 
@@ -95,6 +99,9 @@ class TaskRecord:
     reminded_at: str | None
     created_at: str
     updated_at: str
+    review_limit_bonus: int = 0
+    test_limit_bonus: int = 0
+    recommended_fixed: int = 0
 
 
 @dataclass(frozen=True)
@@ -225,6 +232,21 @@ class Repository:
                     f"작업 {task_id}의 상태가 {expected_state}가 아니라 {current['state']}이다"
                 )
             await self._insert_event(task_id, event, now)
+        return await self.get_task(task_id)
+
+    async def update_fields(self, task_id: int, updates: Mapping[str, object]) -> TaskRecord:
+        """상태는 그대로 두고 필드만 바꾼다 (Issue·PR 번호, 브랜치, worktree, 세션 등)."""
+        fields = _checked_updates(updates)
+        if not fields:
+            return await self.get_task(task_id)
+        assignments = ["updated_at = ?"] + [f"{name} = ?" for name in fields]
+        async with self._transaction():
+            cursor = await self._conn.execute(
+                f"UPDATE tasks SET {', '.join(assignments)} WHERE id = ?",
+                [self._now(), *fields.values(), task_id],
+            )
+            if cursor.rowcount != 1:
+                raise NotFoundError(f"작업 {task_id}가 없다")
         return await self.get_task(task_id)
 
     # events

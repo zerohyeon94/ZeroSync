@@ -408,11 +408,11 @@ class AgentResult:
 | REVIEW | `Review` (verdict, summary, findings) | 구현됨 |
 | PLAN | `PlanSummary` (아래) | [제안] |
 | UI_DESIGN | `UiDesignSummary` (아래) | [제안] (ADR-007) |
-| DESIGN | `DesignSummary` (change_type, target_feature, slug + 아래 추가 필드) | 구현됨 (ADR-005 기준) |
+| DESIGN | `DesignSummary` (change_type, target_feature, slug + 아래 추가 필드) | 구현됨 (2026-10-11, ADR-005 기준) |
 | DIAGNOSE | `DiagnosisReport` (재현 방법, 원인 분류, 근거, 수정 방향, 확신도) | [제안] |
 | RELEASE_PREP | `ReleasePrep` (아래) | [제안] (ADR-007) |
 | 단계 종료 보고 전체 | 선택 필드 `hiring_proposal` (아래) | [제안] (Q19) |
-| IMPLEMENT, FIX | `ImplementationReport` | [제안] |
+| IMPLEMENT, FIX | `ImplementationReport` | 구현됨 (2026-10-11) |
 | DOC_SYNC | `DocSyncProposal` | [제안] (형태는 운영 규약 3.9-3) |
 
 `DesignSummary` 추가 필드 [확정] (Q1, 대상 기능은 1개)
@@ -448,7 +448,7 @@ class AgentResult:
 
 `HiringProposal` [제안] (Q19): `kind`(`team`/`member`), `team`, `role`, `reason`(300자), `cases`(관련 작업 1~5개), `duties`(200자), `mbti`, `competencies`(1~5개), `if_not_hired`(200자). 봇은 이 필드를 검증해 `hiring_proposals`(8장)에 저장하고, 대기 시간·실패 수·한도 초과 수를 DB에서 계산해 붙여 `#대표실`에 게시하고 주간 보고에 모은다 (ADR-007).
 
-`ImplementationReport` [제안]: `changes_summary`(500자), `design_intent`(300자), `check_points`(0~5개), FIX 단계에서는 `responses`(지적 번호별 `fixed` / `declined` + 사유). PR 본문의 구현 담당 항목(운영 규약 1.9)이 여기서 나온다.
+`ImplementationReport` [확정] (2026-10-11 구현): `changes_summary`(500자), `design_intent`(300자), `check_points`(0~5개), FIX 단계에서는 `responses`(지적 번호별 `fixed` / `declined` + 사유). PR 본문의 구현 담당 항목(운영 규약 1.9)이 여기서 나온다.
 
 `DocSyncProposal` [제안]: `summary`(300자), `files`(1~5개: `path`, `action`(`create`/`update`), `content` 전체).
 
@@ -472,7 +472,12 @@ class AgentResult:
 - 포럼 태그: `기획` `디자인` `설계` `구현` `리뷰` `merge대기` `문서반영` `진단` `출시준비` `완료` `중지` `확인필요` [제안] (ADR-007로 `의견중` `결정됨` 제거)
 
 ### 6.2 GitHub (`bot/github/`)
-- `gh` CLI를 감싼 `GitHubClient` 인터페이스: Issue 생성·코멘트·종료·라벨, draft PR 생성·본문 갱신·코멘트·draft 해제, PR 상태 조회 [제안]
+- `gh` CLI를 감싼 `GitHubClient` 인터페이스: Issue 생성·코멘트·종료·라벨, draft PR 생성·본문 갱신·코멘트·draft 해제, PR 상태 조회 (2026-10-11 구현, `bot/github/client.py`)
+- 설계 단계: 봇이 `<paths.worktrees>/<project>-<Issue>`에 develop 최신의 detached worktree를 만들고, Claude가 설계 파일을 커밋하면 봇이 설계 JSON·파일 존재·커밋 메시지를 확인한 뒤 브랜치를 만들어 push한다. `/revise`로 slug·변경 유형이 바뀌면 로컬 브랜치 이름을 바꾸고 새 이름으로 push한 뒤 옛 원격 브랜치를 지운다
+- 에이전트 커밋 확인(설계·구현·수정 공통): 커밋하지 않은 변경 없음, 새 커밋 있음, 모든 새 커밋 메시지가 4.4 형식. 어긋나면 형식 오류와 같이 내용을 붙여 1회 재요청하고, 다시 어긋나면 NEEDS_HUMAN
+- 설계 대상 기능 검증은 볼트 `기능/` 폴더를 읽기만 해서 한다. 볼트 쓰기는 Phase 3
+- /stop: Issue는 not planned로 닫고, PR이 있으면 닫고, 없으면 원격 작업 브랜치를 지운 뒤 worktree를 정리한다
+- merge 감지: Issue에 merge 완료 코멘트 후 종료, worktree 정리, DONE. DOC_DRAFTING은 Phase 3 (2026-10-11 Zero 결정)
 - 봇의 git 작업은 `GitOps` 인터페이스: worktree 생성·삭제, 브랜치 생성, 커밋 메시지 검사, push. push 전 두 조건 검사(운영 규약 4.7)는 단위 테스트로 고정
 - merge 감지: `AWAIT_MERGE` 상태의 PR을 5분 간격으로 조회 (운영 규약 3.9-1)
 - 첫 실행 시 라벨이 없으면 만든다 (운영 규약 4.8)
@@ -486,7 +491,7 @@ class AgentResult:
 ### 6.4 테스트 실행 (`bot/testrun.py`)
 - `projects.yaml`의 `test` 명령을 전역 락 아래에서 실행한다 (운영 규약 1.7)
 - 결과 요약: 종료 코드, 통과·실패 수, 실패 테스트명, 소요 시간. 전체 로그는 `~/.zerosync/runs/`
-- xcodebuild 결과 파싱(통과·실패 수)은 `-resultBundlePath`의 결과 번들 또는 출력 텍스트에서 한다 [검증 필요]
+- xcodebuild 결과 파싱은 출력 텍스트에서 한다 (2026-10-11 구현): XCTest의 마지막 `Executed N tests, with M failures`, Swift Testing의 `Test run with N tests ... with M issues`, 실패 테스트명, `error:` 줄(빌드 오류). 결과 번들 파싱은 필요해지면 검토
 
 
 ### 6.5 요청 대기열 (`bot/intake/`) [확정] (Q14, ADR-007로 축소)
@@ -537,7 +542,7 @@ Discord 채팅의 대화 ──────────────────�
 
 ## 7. 모듈 구조
 
-현재 develop에 있는 것은 `bot/__main__.py`(골격), `bot/schemas/`(구현), `bot/agents/`(인터페이스·프로세스 실행·가짜 러너·Claude·Codex CLI 러너), `bot/clock.py`, `bot/store/`(SQLite 스키마 v1·저장소), `bot/workflow/`(상태 enum과 OPINIONS 범위 전이, ChatIO 인터페이스, 멘션 규칙, OPINIONS 단계 엔진), `bot/prompts/`(의견·반박), `bot/render/`(의견·안내), `bot/config.py`(설정 로더), `bot/locks.py`(단일 인스턴스 락), `bot/discord_io/`(규칙, `DiscordChat`, 클라이언트)다. `bot/__main__.py`는 설정 → 락 → DB → 러너 → 엔진 → Discord 순으로 연결한다. 아래는 목표 구조다 [제안].
+현재 develop에 있는 것은 `bot/__main__.py`(골격), `bot/schemas/`(구현), `bot/agents/`(인터페이스·프로세스 실행·가짜 러너·Claude·Codex CLI 러너), `bot/clock.py`, `bot/store/`(SQLite 스키마 v2·저장소), `bot/workflow/`(상태 enum과 Phase 1·2 전이, ChatIO 인터페이스, 멘션 규칙, 엔진 `engine.py`, 설계~merge 단계 작업 `work.py`), `bot/prompts/`(의견·반박·설계·구현·수정·리뷰), `bot/render/`(의견·안내·Issue·설계·테스트·리뷰·PR 본문), `bot/github/`(push 보호·커밋 메시지 규칙, GitOps, GitHubClient), `bot/testrun.py`, `bot/dashboard/`, `bot/config.py`(설정 로더), `bot/locks.py`(단일 인스턴스 락), `bot/discord_io/`(규칙, `DiscordChat`, 클라이언트)다. `bot/__main__.py`는 설정 → 락 → DB → 러너 → 엔진 → Discord 순으로 연결한다. 아래는 목표 구조다 [제안].
 
 ```
 bot/
@@ -593,7 +598,7 @@ CREATE TABLE tasks (
   title            TEXT NOT NULL,
   state            TEXT NOT NULL,                 -- 3.1의 상태
   prev_state       TEXT,                          -- NEEDS_HUMAN에서 돌아갈 상태
-  review_round     INTEGER NOT NULL DEFAULT 0,
+  review_round     INTEGER NOT NULL DEFAULT 0,  -- v2부터 review_limit_bonus, test_limit_bonus(/resume으로 늘린 한도), recommended_fixed(/fix 사용 여부) 추가
   test_retry       INTEGER NOT NULL DEFAULT 0,
   opinion_rounds   INTEGER NOT NULL DEFAULT 0,
   issue_number     INTEGER,
@@ -918,8 +923,8 @@ products:
 | V3 | Claude 쓰기 단계의 허용·금지 도구 지정 방식 | 공식 문서, 시험 호출 | 5.2 권한 | 확인 (2026-10-10): `--allowedTools`·`--disallowedTools`·`--permission-mode`·`--permission-prompts none` |
 | V4 | Codex read-only 샌드박스에서 `xcodebuild` 실패 여부 | 시험 호출 | 1.7 (봇이 테스트 실행하는 근거) |  |
 | V5 | 웹훅 메시지의 silent(알림 억제) 지원 | 시험 게시 | 2.5 멘션 규칙 | 확인 (2026-10-11): 멘션 없는 웹훅·운영 채널 메시지는 알림 없이, 멘션 붙은 마지막 의견만 알림 |
-| V6 | 개인 private 저장소에서 브랜치 보호(rulesets) 사용 가능 여부 | GitHub 설정 | 4.7 |  |
-| V7 | `gh` 인증 계정의 Issue·PR 쓰기 권한 | `gh auth status`, 시험 Issue | 1.8, 1.9 |  |
+| V6 | 개인 private 저장소에서 브랜치 보호(rulesets) 사용 가능 여부 | GitHub 설정 | 4.7 | GagaeSsi는 공개 저장소. 규칙 1개가 있으나 꺼져 있음 (2026-10-11). 봇은 push 보호(4.7)로 막고, 규칙 활성화는 Zero 판단 |
+| V7 | `gh` 인증 계정의 Issue·PR 쓰기 권한 | `gh auth status`, 시험 Issue | 1.8, 1.9 | 확인 (2026-10-11): `zerohyeon94`, scope `repo` |
 | V8 | 볼트 루트가 git 저장소인지, iCloud 동기화 중 쓰기 안정성 | `git -C <볼트> status` | 3.10 |  |
 | V9 | xcodebuild CoreDevice 오류(`_XPCTypeBool`) 해결 | `xcodebuild test` | 1.7 전체. Phase 2 실제 사이클과 가게씨 흐름(Phase 5~6) 차단 요인 |  |
 | V10 | launchd 환경에서 CLI 실행(PATH, 키체인 접근) | plist로 시험 실행 | 9.3 |  |
@@ -993,7 +998,7 @@ Zero가 회사 재정의 1~5단계([docs/회사/](회사/README.md))에서 정�
 |---|---|---|
 | 0 | 문서 정비: 운영 규약, ADR-005, AGENTS.md, 스키마, SPEC.md | 완료 |
 | 1 | MVP: 포럼 게시글 감지 → Beta·Alpha 의견 병렬 게시 | 완료 (2026-10-11 실제 서버에서 한 사이클 확인) |
-| 2 | 워크플로 (ADR-005 기준): 상태 머신 전체, 승인 명령, 리뷰 루프, 테스트 실행, Issue·PR, /stop | 구현 (`feat/0-phase2-workflow`). 회사 재정의 문서가 merge된 뒤 develop을 합치고, 가게씨 실제 사이클 한 번으로 엔진 부품(테스트 실행, GitHub, worktree)을 확인하고 PR을 연다 |
+| 2 | 워크플로 (ADR-005 기준): 상태 머신 전체, 승인 명령, 리뷰 루프, 테스트 실행, Issue·PR, /stop | 구현 (`feat/0-phase2-workflow`). 2026-10-28 가게씨 실제 사이클(작업 5, Issue #34)로 의견·결정·Issue·설계·승인·구현·worktree·push를 확인. 테스트 실행 이후(리뷰, draft PR, merge 감지)는 맥의 시뮬레이터 설치 뒤 `/resume`으로 확인한다. 테스트 환경 오류를 NEEDS_HUMAN으로 보내는 수정 포함 |
 | 3 | 조직: 비공개 회사 저장소 경로, `org.yaml`(부서·팀·에이전트)·인격 파일 로더, Beta·Gamma·Alpha·Delta, 에이전트별 엔진·모델(모두 Claude), 표시 이름 `[이름 · 직책]`, 리뷰 담당을 Delta(새 세션·읽기 전용)로, `hiring_proposal`·`/hire` | 미시작 |
 | 4 | 운영화: launchd, 요청 대기열(우선순위, 동시 실행 1개), 일정 실행기, `#대표실` 아침·주간 보고, 팀장별 일일 예산, 사용량 한도 정지(V15), 재멘션, 대시보드 확장(9.3-1) | 미시작 |
 | 5 | 채팅과 기능 개발 흐름: 제품 채팅 채널과 대화, `/task`·`/debate`·`/idea` 입력, 파이프라인 YAML 로더와 규칙 검사(R1~R5, `when`), 기능 개발을 `pipelines/feature.yaml`로 이전(PLANNING, 화면 디자인, Alpha 설계·구현, Delta 검증), Claude 디자인 확인(V14), 흐름별 예산, 볼트·DOC_SYNC | 미시작 |
@@ -1011,6 +1016,7 @@ Zero가 회사 재정의 1~5단계([docs/회사/](회사/README.md))에서 정�
 (2026-10-11부터 PR 단위를 바꿨다. 목표 하나가 최종 완료될 때까지 한 브랜치에 모아 PR을 한 번만 연다. 아래 분할은 작업 순서로만 남긴다. AGENTS.md 참고)
 
 6. `feat/0-phase1-run` — 실제 서버 첫 실행과 시험 사이클, 시작 실패 처리, 이름 통일, 로컬 대시보드(9.3-1) (2026-10-11 구현)
+7. `feat/0-phase2-workflow` — Phase 2 전체: 스키마, GitHub·git 계층, 테스트 실행, 상태 머신 전체, 엔진 단계 작업, Discord 명령, merge 확인, GagaeSsi 실제 사이클 (2026-10-11~)
 
 1. `feat/0-agent-runner` — `AgentRunner` 인터페이스, `FakeAgentRunner`, 자식 프로세스 실행(타임아웃·취소, 실행 로그 저장)
    - CLI 러너는 CLI 설치 후 별도 스레드로 분리했다 (2026-10-07 Zero 승인): 이 맥에 `claude`·`codex`가 없어 V1~V3을 확인할 수 없었다

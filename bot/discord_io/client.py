@@ -25,16 +25,31 @@ from bot.discord_io.rules import (
     classify,
     command_error,
 )
+from bot.github import GitHubClient
 from bot.render.status import render_ping, render_status
 from bot.store import Repository
-from bot.workflow.engine import Engine
+from bot.workflow.engine import Engine, ProjectContext
 from bot.workflow.mentions import Moment, should_mention
-from bot.workflow.state import CommandName, TaskState
+from bot.workflow.state import CommandName, Limits, TaskState
 
 log = logging.getLogger(__name__)
 
 EMPTY_POST = "(본문 없음)"
 ACTIVE_STATES = {state for state in TaskState if not state.is_terminal}
+
+
+def project_contexts(config: Config) -> dict[str, ProjectContext]:
+    """설정의 프로젝트를 엔진 실행 정보로 바꾼다. 볼트 `기능/` 폴더는 읽기만 한다."""
+    return {
+        key: ProjectContext(
+            repo=project.repo,
+            base_branch=project.base_branch,
+            test_command=project.test,
+            github=GitHubClient(project.github),
+            feature_dir=config.paths.vault_projects / project.vault_dir / "기능",
+        )
+        for key, project in config.projects.items()
+    }
 
 
 class ZeroSyncBot(discord.Client):
@@ -45,6 +60,8 @@ class ZeroSyncBot(discord.Client):
         runners: Mapping[AgentName, AgentRunner],
         *,
         clock: Clock | None = None,
+        git: Any = None,
+        tests: Any = None,
     ):
         intents = discord.Intents.default()
         intents.message_content = True
@@ -68,8 +85,16 @@ class ZeroSyncBot(discord.Client):
             repo,
             self.chat,
             runners,
-            {key: project.repo for key, project in config.projects.items()},
+            project_contexts(config),
             timeout_sec=config.limits.cli_timeout_sec,
+            git=git,
+            tests=tests,
+            limits=Limits(
+                max_review_rounds=config.limits.max_review_rounds,
+                max_test_retries=config.limits.max_test_retries,
+            ),
+            worktrees_dir=config.paths.worktrees,
+            thread_url=self.thread_url,
         )
         self._webhooks: dict[int, discord.Webhook] = {}
         self._background: set[asyncio.Task[None]] = set()
@@ -103,10 +128,30 @@ class ZeroSyncBot(discord.Client):
             await self.close()
             return
         await self.engine.recover_interrupted()
+        await self.engine.prepare_github()
+        self._merge_poller = asyncio.create_task(self._poll_merges())
         await self.chat.notify_ops(
             f"ZeroSync 봇을 시작했다. 프로젝트: {', '.join(self.config.projects)}",
             mention=should_mention(Moment.NOTICE),
         )
+
+    def thread_url(self, thread: str) -> str:
+        return f"https://discord.com/channels/{self.guild_ref.id}/{thread}"
+
+    async def _poll_merges(self) -> None:
+        """AWAIT_MERGE 작업의 PR merge를 주기적으로 확인한다 (SPEC 6.2)."""
+        while not self.is_closed():
+            try:
+                await self.engine.poll_merges()
+            except Exception:
+                log.exception("merge 확인 실패")
+            await asyncio.sleep(self.config.limits.merge_poll_sec)
+
+    async def close(self) -> None:
+        poller = getattr(self, "_merge_poller", None)
+        if poller is not None:
+            poller.cancel()
+        await super().close()
 
     async def _prepare_webhooks(self) -> None:
         assert self.user is not None
@@ -264,6 +309,24 @@ def _register_commands(bot: ZeroSyncBot) -> None:
     async def stop(interaction: discord.Interaction) -> None:
         await bot.run_command(interaction, CommandName.STOP)
 
+    @tree.command(name="approve", description="설계를 승인하고 구현을 시작한다", guild=guild)
+    async def approve(interaction: discord.Interaction) -> None:
+        await bot.run_command(interaction, CommandName.APPROVE)
+
+    @tree.command(name="revise", description="설계를 고쳐 달라고 요청한다", guild=guild)
+    @app_commands.rename(request="요청")
+    @app_commands.describe(request="고칠 내용")
+    async def revise(interaction: discord.Interaction, request: str) -> None:
+        await bot.run_command(interaction, CommandName.REVISE, request)
+
+    @tree.command(name="fix", description="merge 전에 [권장] 지적을 1회 반영한다", guild=guild)
+    async def fix(interaction: discord.Interaction) -> None:
+        await bot.run_command(interaction, CommandName.FIX, "권장 반영")
+
+    @tree.command(name="resume", description="확인 필요 상태에서 직전 단계로 재개한다", guild=guild)
+    async def resume(interaction: discord.Interaction) -> None:
+        await bot.run_command(interaction, CommandName.RESUME)
+
     @tree.command(name="status", description="이 작업의 상태와 진행 횟수", guild=guild)
     async def status(interaction: discord.Interaction) -> None:
         await bot.show_status(interaction)
@@ -276,7 +339,9 @@ def _register_commands(bot: ZeroSyncBot) -> None:
 async def run_bot(config: Config) -> None:
     """DB를 열고 러너·엔진·Discord 클라이언트를 연결해 종료될 때까지 실행한다."""
     from bot.agents import ClaudeCliRunner, CodexCliRunner, ProcessRunner
+    from bot.github import GitOps
     from bot.store import connect
+    from bot.testrun import TestRunner
 
     conn = await connect(config.paths.db)
     try:
@@ -285,7 +350,14 @@ async def run_bot(config: Config) -> None:
             "claude": ClaudeCliRunner(process, config.cli.claude, config.cli.claude_models),
             "codex": CodexCliRunner(process, config.cli.codex, config.cli.codex_models),
         }
-        bot = ZeroSyncBot(config, Repository(conn, SystemClock()), runners)
+        tests = TestRunner(
+            process,
+            concurrent=config.limits.concurrent_builds,
+            timeout_sec=config.limits.cli_timeout_sec,
+        )
+        bot = ZeroSyncBot(
+            config, Repository(conn, SystemClock()), runners, git=GitOps(), tests=tests
+        )
         async with bot:
             await bot.start(config.secrets.discord_token.get_secret_value())
         if bot.startup_error is not None:
