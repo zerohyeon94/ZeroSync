@@ -364,6 +364,15 @@ class Engine(WorkStages):
                 mention=should_mention(Moment.BOT_ERROR),
             )
 
+        # 포스트 없이 NEEDS_HUMAN에 멈춘 일정 작업(이 수정 전 기록)에 포스트를 열어 준다
+        for task in await self._repo.list_tasks({TaskState.NEEDS_HUMAN}):
+            if not self._postable(task):
+                await self._say(
+                    task,
+                    render_notice(NoticeCode.NEEDS_HUMAN, "포스트 없이 멈춰 있었다"),
+                    Moment.NEEDS_HUMAN,
+                )
+
     async def remind_waiting(self, after: timedelta) -> int:
         """Zero 대기가 after를 넘은 작업에 1회만 다시 멘션한다 (운영 규약 2.5). 보낸 수."""
         now = self._clock.now()
@@ -507,15 +516,27 @@ class Engine(WorkStages):
     def _postable(self, task: TaskRecord) -> bool:
         return not task.discord_thread.startswith(SCHEDULED_THREAD)
 
+    async def _open_post(self, task: TaskRecord, title: str, body: str) -> TaskRecord:
+        """포스트가 없는 일정 작업에 포럼 포스트를 열고 작업에 붙인다."""
+        day = self._clock.now().astimezone().strftime("%m-%d")
+        thread = await self._chat.create_post(task.project, f"{title} ({day})", body)
+        return await self._repo.update_fields(task.id, {"discord_thread": thread})
+
     async def _say(self, task: TaskRecord, text: str, moment: Moment = Moment.NOTICE) -> str:
         """작업 포스트에 [ZeroSync]로 게시한다.
 
-        포스트가 없는 일정 작업은 행동이 필요할 때만 운영 채널로 보낸다.
+        포스트가 없는 일정 작업은 Zero의 행동이 필요할 때 포스트를 연다.
+        그래야 그 포스트에서 /resume, /stop을 쓸 수 있다. 그 밖의 안내는 게시하지 않는다.
         """
         if not self._postable(task):
-            if should_mention(moment):
-                await self._chat.notify_ops(f"[{task.project}] {task.title}: {text}", mention=True)
-            return ""
+            if not should_mention(moment):
+                return ""
+            task = await self._open_post(
+                task,
+                f"{task.title} 확인 필요",
+                f"일정으로 실행한 {task.title}이 Zero의 확인을 기다린다. "
+                "이 포스트에서 /resume 또는 /stop을 쓴다.",
+            )
         return await self._chat.post(
             task.discord_thread, "bot", text, mention=should_mention(moment)
         )

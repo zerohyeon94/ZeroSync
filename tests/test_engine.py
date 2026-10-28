@@ -561,6 +561,50 @@ def test_nightly_test_failure_is_diagnosed_and_reported():
         assert h.chat.posts and h.chat.posts[-1].thread == "thread-gagaessi-1"
 
 
+def no_device():
+    return TestReport(
+        status=RunStatus.ERROR, exit_code=70, total=None, failures=None, log_path="runs/t.log"
+    )
+
+
+def test_nightly_environment_error_opens_post_to_resume():
+    """시뮬레이터가 없어 멈춘 정기 테스트도 포스트가 있어야 /resume, /stop을 쓸 수 있다."""
+
+    @scenario(tests=[no_device(), make_report()])
+    async def _(h):
+        task = await h.engine.start_scheduled(P, "nightly-test")
+        assert task.state is TaskState.NEEDS_HUMAN
+        (created,) = h.chat.created
+        assert created[0] == P and "확인 필요" in created[1]
+        assert task.discord_thread == "thread-gagaessi-1"
+        notice = h.chat.posts[-1]
+        assert notice.thread == task.discord_thread and notice.mention and "/resume" in notice.text
+        task = await h.command(CommandName.RESUME)
+        assert task.state is TaskState.DONE
+        assert len(h.chat.created) == 1
+
+
+def test_restart_opens_post_for_scheduled_task_stuck_without_one():
+    @scenario()
+    async def _(h):
+        await h.repo.create_task(
+            project=P,
+            discord_thread="sched:gagaessi:nightly-test:old",
+            title="정기 테스트",
+            state=TaskState.NEEDS_HUMAN,
+            event=NewEvent(Actor.ZERO, EventKind.DECISION, {"text": "정기 테스트"}),
+            updates={"prev_state": TaskState.TESTING},
+            pipeline="nightly-test",
+        )
+        await h.engine.recover_interrupted()
+        task = await h.task()
+        assert task.discord_thread == "thread-gagaessi-1"
+        assert await h.command(CommandName.STOP) is not None
+        assert (await h.task()).state is TaskState.STOPPED
+        await h.engine.recover_interrupted()
+        assert len(h.chat.created) == 1
+
+
 # 예산, 한도, 대기열 (ADR-007)
 
 
