@@ -121,6 +121,7 @@ class WorkStages:
     _say: Any
     _post: Any
     _postable: Any
+    _open_post: Any
     _side_effect: Any
     _advance: Any
     _pipeline: Any
@@ -972,11 +973,9 @@ class WorkStages:
         if diagnosis is not None:
             body += "\n\n" + render_diagnosis(diagnosis)
         body += "\n\n수정하려면 제품 채팅 채널에서 `/task bug <제목>`으로 시작한다."
-        day = self._clock.now().astimezone().strftime("%m-%d")
-        thread = await self._chat.create_post(task.project, f"{task.title} 실패 ({day})", body)
-        task = await self._repo.update_fields(task.id, {"discord_thread": thread})
+        task = await self._open_post(task, f"{task.title} 실패", body)
         await self._say(task, "정기 테스트가 실패했다. 확인이 필요하다.", Moment.DESIGN_READY)
-        payload = {"posted": True, "thread": thread}
+        payload = {"posted": True, "thread": task.discord_thread}
         return StageSucceeded(), NewEvent(Actor.BOT, EventKind.REPORT, payload)
 
     # NEEDS_HUMAN, merge, 끝, 중지
