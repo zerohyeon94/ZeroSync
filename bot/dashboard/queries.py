@@ -219,6 +219,26 @@ def get_run(conn: sqlite3.Connection, run_id: str) -> RunRow | None:
     return None if row is None else _run(row)
 
 
+@dataclass(frozen=True)
+class IdeaRow:
+    id: int
+    project: str
+    body: str
+    status: str
+    task_id: int | None
+    created_at: str
+
+
+def list_ideas(conn: sqlite3.Connection, *, project: str | None = None) -> list[IdeaRow]:
+    """/idea로 남긴 아이디어. 새것부터 (ADR-007)."""
+    sql = "SELECT id, project, body, status, task_id, created_at FROM ideas"
+    params: tuple[Any, ...] = ()
+    if project:
+        sql, params = sql + " WHERE project = ?", (project,)
+    rows = _optional(conn, sql + " ORDER BY id DESC", params)
+    return [IdeaRow(*tuple(row)) for row in rows]
+
+
 def projects(conn: sqlite3.Connection) -> list[str]:
     return [row[0] for row in conn.execute("SELECT DISTINCT project FROM tasks ORDER BY 1")]
 

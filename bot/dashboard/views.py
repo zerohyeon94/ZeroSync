@@ -11,6 +11,7 @@ from urllib.parse import quote, urlencode
 
 from bot.dashboard.queries import (
     EventRow,
+    IdeaRow,
     Overview,
     ProjectSummary,
     RunRow,
@@ -20,6 +21,8 @@ from bot.dashboard.queries import (
 from bot.org import DEFAULT_ORG
 from bot.render import render_opinion
 from bot.schemas import Opinion
+
+IDEA_LABELS = {"open": "열림"}
 
 STATUS_LABELS = {
     "running": "실행 중",
@@ -135,6 +138,7 @@ def page(title: str, body: str, *, active: str = "") -> str:
             ("summary", "/", "요약"),
             ("tasks", "/tasks", "작업"),
             ("runs", "/runs", "실행 기록"),
+            ("ideas", "/ideas", "아이디어"),
         )
     )
     return (
@@ -518,6 +522,23 @@ def runs_page(
     note = f'<p class="muted">최근 {limit}건까지 보여 준다</p>' if len(runs) >= limit else ""
     body = f"<h1>실행 기록</h1>{filters}{note}{_runs_table(runs)}"
     return page("실행 기록", body, active="runs")
+
+
+def ideas_page(ideas: Sequence[IdeaRow], *, projects: Sequence[str], project: str) -> str:
+    filters = _filters("/ideas", [("project", "프로젝트", [(p, p) for p in projects], project)])
+    rows = [
+        (
+            str(idea.id),
+            _e(idea.project),
+            _e(idea.body),
+            _e(IDEA_LABELS.get(idea.status, idea.status)),
+            _task_link(idea.task_id, "") if idea.task_id else "",
+            local_time(idea.created_at),
+        )
+        for idea in ideas
+    ]
+    table = _table(["번호", "프로젝트", "내용", "상태", "작업", "남긴 때"], rows, {0})
+    return page("아이디어", f"<h1>아이디어</h1>{filters}{table}", active="ideas")
 
 
 def message_page(title: str, message: str, status_class: str = "muted") -> str:

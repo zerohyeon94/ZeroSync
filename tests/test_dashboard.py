@@ -83,6 +83,8 @@ def settings(tmp_path):
             await repo.start_agent_run(
                 "r-cancel", task_id=second.id, agent="claude", stage=Stage.DEBATE
             )
+            await repo.add_idea("gagaessi", "홈 위젯 <b>")
+            await repo.add_idea("jday", "알림 묶기")
             await repo.finish_agent_run(
                 "r-cancel", status=RunStatus.CANCELLED, exit_code=None, log_path=None
             )
@@ -149,6 +151,14 @@ def test_runs_list_filters(settings):
     assert "취소" in body and "/runs/r-ok/log" not in body
     _, body = get(settings, "/runs?project=gagaessi")
     assert "다른 프로젝트" not in body
+
+
+def test_ideas_list_filters(settings):
+    status, body = get(settings, "/ideas")
+    assert status is HTTPStatus.OK
+    assert "홈 위젯 &lt;b&gt;" in body and "알림 묶기" in body and "열림" in body
+    _, body = get(settings, "/ideas?project=jday")
+    assert "홈 위젯" not in body and "알림 묶기" in body
 
 
 def test_log_is_served_only_from_runs_dir(settings):

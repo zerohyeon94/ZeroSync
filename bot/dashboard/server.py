@@ -114,6 +114,10 @@ def _route(
                 limit=RUN_LIMIT,
             )
         )
+    if parts == ["ideas"]:
+        project = params.get("project", "")
+        ideas = queries.list_ideas(conn, project=project or None)
+        return _ok(views.ideas_page(ideas, projects=queries.projects(conn), project=project))
     if len(parts) == 3 and parts[0] == "runs" and parts[2] == "log":
         return _log(settings, conn, parts[1])
     return _not_found("없는 주소다")
