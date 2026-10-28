@@ -904,3 +904,36 @@ def test_usage_limit_pauses_queue_and_retries_once():
         assert any("사용량 한도" in text and mention for text, mention in h.chat.ops)
         assert any("다시 시작" in text for text, _ in h.chat.ops)
         assert [p.author for p in h.chat.posts] == ["beta", "alpha"]
+
+
+# 재멘션 (운영 규약 2.5)
+
+
+def test_waiting_task_is_reminded_once_after_24_hours():
+    @scenario(claude=[opinion("a")], codex=[opinion("b")])
+    async def result(h):
+        await h.post()
+        task = await h.task()
+        assert task.waiting_since is not None and task.reminded_at is None
+
+        h.clock.advance(timedelta(hours=23))
+        assert await h.engine.remind_waiting(timedelta(hours=24)) == 0
+        h.clock.advance(timedelta(hours=2))
+        assert await h.engine.remind_waiting(timedelta(hours=24)) == 1
+        reminder = h.chat.posts[-1]
+        assert reminder.author == "bot" and reminder.mention is True
+        assert "OPINIONS (25시간째)" in reminder.text
+        # 한 번만 보낸다
+        h.clock.advance(timedelta(hours=30))
+        assert await h.engine.remind_waiting(timedelta(hours=24)) == 0
+
+
+def test_zero_input_restarts_the_waiting_clock():
+    @scenario(claude=[opinion("a"), opinion("c")], codex=[opinion("b"), opinion("d")])
+    async def result(h):
+        await h.post()
+        first = (await h.task()).waiting_since
+        h.clock.advance(timedelta(hours=5))
+        await h.engine.on_message(THREAD, "질문")
+        task = await h.task()
+        assert task.waiting_since != first and task.reminded_at is None

@@ -37,6 +37,7 @@ from bot.workflow.state import CommandName, Limits, TaskState
 log = logging.getLogger(__name__)
 
 EMPTY_POST = "(본문 없음)"
+REMIND_CHECK_SEC = 600
 ACTIVE_STATES = {state for state in TaskState if not state.is_terminal}
 
 
@@ -136,7 +137,10 @@ class ZeroSyncBot(discord.Client):
             return
         await self.engine.recover_interrupted()
         await self.engine.prepare_github()
-        self._merge_poller = asyncio.create_task(self._poll_merges())
+        self._loops = [
+            asyncio.create_task(self._poll_merges()),
+            asyncio.create_task(self._remind_loop()),
+        ]
         await self.chat.notify_ops(
             f"ZeroSync 봇을 시작했다. 프로젝트: {', '.join(self.config.projects)}. "
             f"조직: {', '.join(self.config.org.display(a) for a in self.config.org.agent_names)}",
@@ -155,10 +159,19 @@ class ZeroSyncBot(discord.Client):
                 log.exception("merge 확인 실패")
             await asyncio.sleep(self.config.limits.merge_poll_sec)
 
+    async def _remind_loop(self) -> None:
+        """Zero 대기가 길어진 작업을 10분마다 확인해 1회 다시 멘션한다 (운영 규약 2.5)."""
+        after = timedelta(hours=self.config.limits.remind_after_hours)
+        while not self.is_closed():
+            try:
+                await self.engine.remind_waiting(after)
+            except Exception:
+                log.exception("재멘션 확인 실패")
+            await asyncio.sleep(REMIND_CHECK_SEC)
+
     async def close(self) -> None:
-        poller = getattr(self, "_merge_poller", None)
-        if poller is not None:
-            poller.cancel()
+        for loop in getattr(self, "_loops", []):
+            loop.cancel()
         await super().close()
 
     async def _prepare_webhooks(self) -> None:

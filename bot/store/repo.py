@@ -194,6 +194,8 @@ class Repository:
     ) -> TaskRecord:
         fields = _checked_updates(updates or {})
         now = self._now()
+        if state.waits_for_zero:
+            fields.setdefault("waiting_since", now)
         columns = ["project", "discord_thread", "title", "state", "created_at", "updated_at"]
         values: list[object] = [project, discord_thread, title, state.value, now, now]
         columns += list(fields)
@@ -241,8 +243,18 @@ class Repository:
         event: NewEvent,
         updates: Mapping[str, object] | None = None,
     ) -> TaskRecord:
-        """상태와 필드를 바꾸고 이벤트를 기록한다. 현재 상태가 expected_state가 아니면 실패한다."""
+        """상태와 필드를 바꾸고 이벤트를 기록한다. 현재 상태가 expected_state가 아니면 실패한다.
+
+        Zero 대기 상태에 들어가거나 그 상태에서 Zero가 입력하면 대기 시작 시각을 새로 적고,
+        대기 상태를 벗어나면 지운다. 재멘션(운영 규약 2.5)의 기준이다.
+        """
         fields = _checked_updates(updates or {})
+        if "waiting_since" not in fields:
+            if new_state.waits_for_zero:
+                if new_state is not expected_state or event.actor == Actor.ZERO:
+                    fields.update(waiting_since=self._now(), reminded_at=None)
+            else:
+                fields.update(waiting_since=None, reminded_at=None)
         now = self._now()
         assignments = ["state = ?", "updated_at = ?"] + [f"{name} = ?" for name in fields]
         values: list[object] = [new_state.value, now, *fields.values(), task_id]

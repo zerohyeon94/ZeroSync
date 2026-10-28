@@ -293,6 +293,7 @@ class NoticeCode(StrEnum):
     NOT_IMPLEMENTED = "not_implemented"
     INTERRUPTED = "interrupted"
     NEEDS_HUMAN = "needs_human"
+    REMINDER = "reminder"
 
 
 @dataclass(frozen=True)

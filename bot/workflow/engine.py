@@ -347,6 +347,27 @@ class Engine(WorkStages):
                 mention=should_mention(Moment.BOT_ERROR),
             )
 
+    async def remind_waiting(self, after: timedelta) -> int:
+        """Zero 대기가 after를 넘은 작업에 1회만 다시 멘션한다 (운영 규약 2.5). 보낸 수."""
+        now = self._clock.now()
+        sent = 0
+        waiting = {state for state in TaskState if state.waits_for_zero}
+        for task in await self._repo.list_tasks(waiting):
+            if task.waiting_since is None or task.reminded_at is not None:
+                continue
+            if now - from_iso(task.waiting_since) < after:
+                continue
+            hours = int((now - from_iso(task.waiting_since)).total_seconds() // 3600)
+            await self._chat.post(
+                task.discord_thread,
+                "bot",
+                render_notice(NoticeCode.REMINDER, f"현재 상태: {task.state} ({hours}시간째)"),
+                mention=should_mention(Moment.REMINDER),
+            )
+            await self._repo.update_fields(task.id, {"reminded_at": to_iso(now)})
+            sent += 1
+        return sent
+
     # 효과
 
     async def _run_effects(self, task: TaskRecord, effects: Sequence[Effect]) -> None:
