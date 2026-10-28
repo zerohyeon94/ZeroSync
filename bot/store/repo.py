@@ -48,6 +48,7 @@ class EventKind(StrEnum):
     PLAN = "plan"
     UI_DESIGN = "ui_design"
     DIAGNOSIS = "diagnosis"
+    LEAD_CHECK = "lead_check"
     RELEASE = "release"
     REPORT = "report"
     COMMAND = "command"

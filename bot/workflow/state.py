@@ -215,12 +215,14 @@ class Limits:
 
     max_review_rounds: int = 3
     max_test_retries: int = 2
+    max_check_rounds: int = 2  # 팀장 확인 (ADR-008). 넘으면 단계 실패
 
 
 class FixSource(StrEnum):
     TESTS = "tests"  # 테스트 실패
     REVIEW = "review"  # 리뷰 담당의 [필수] 지적
     RECOMMENDED = "recommended"  # merge 전 /fix 권장 반영
+    LEAD_CHECK = "lead_check"  # 팀장 확인의 [필수] 지적 (ADR-008)
     RESUME = "resume"  # NEEDS_HUMAN에서 재개: 직전 수정 맥락을 다시 쓴다
 
 

@@ -11,6 +11,9 @@ YAML을 해석해 판단하지 않는다.
 - R3: 구현 뒤에는 merge_gate가 있다 (봇은 merge하지 않는다)
 - R4: 담당은 org.yaml에 있는 에이전트다. Codex 엔진은 읽기 전용 단계만 맡는다
 - R5: triggers는 정해진 값(discord_task, schedule)이다
+- R6: 팀장 확인(check)은 구현·진단 단계에만 두고, 담당 팀원의 팀장이 맡는다 (ADR-008)
+
+R1에서 작성 단계의 팀장 확인 담당도 작성 담당으로 본다. 확인하며 고칠 방향을 정했기 때문이다.
 """
 
 from enum import StrEnum
@@ -71,6 +74,8 @@ _WRITING_KINDS = frozenset(
 )
 # 리뷰 담당과 달라야 하는 단계 (R1)
 _AUTHORING_KINDS = _WRITING_KINDS
+# 팀장 확인(check)을 붙일 수 있는 단계: 팀원이 실행하는 일 (ADR-008)
+_CHECKABLE = frozenset({StageKind.IMPLEMENT, StageKind.DIAGNOSE})
 # 승인 게이트를 둘 수 있는 앞 단계
 _APPROVABLE = frozenset(
     {
@@ -101,6 +106,8 @@ class StageDecl(_Model):
     retries: int | None = Field(default=None, ge=0)  # test: 실패 재시도 (없으면 limits)
     rounds: int | None = Field(default=None, ge=1)  # review: 최대 라운드 (없으면 limits)
     scope: Literal["full"] | None = None  # test: 출시 점검은 전체 테스트
+    check: str | None = None  # 팀장 확인: 팀원(agent)의 결과를 확인할 팀장 (ADR-008)
+    check_rounds: int | None = Field(default=None, ge=1)  # 팀장 확인 최대 횟수 (없으면 limits)
 
     @model_validator(mode="after")
     def _agent_matches_kind(self) -> "StageDecl":
@@ -108,6 +115,10 @@ class StageDecl(_Model):
             raise ValueError(f"{self.id}({self.kind}) 단계에 agent가 없다")
         if not self.kind.needs_agent and self.agent:
             raise ValueError(f"{self.id}({self.kind}) 단계는 agent를 두지 않는다 (봇·Zero가 한다)")
+        if self.check is not None and self.kind not in _CHECKABLE:
+            raise ValueError(f"{self.id}({self.kind}) 단계에는 check를 두지 않는다 (R6)")
+        if self.check_rounds is not None and self.check is None:
+            raise ValueError(f"{self.id}: check_rounds는 check가 있을 때만 쓴다")
         return self
 
 
@@ -191,20 +202,27 @@ class Pipeline(_Model):
 
 
 def check_against_org(pipeline: Pipeline, org: Org) -> None:
-    """에이전트 이름과 엔진 규칙 (R1, R4)."""
+    """에이전트 이름과 엔진 규칙 (R1, R4, R6)."""
     for stage in pipeline.stages:
         if stage.agent is None:
             continue
-        if stage.agent not in org.agents:
-            raise PipelineError(
-                f"{pipeline.key}: {stage.id}의 {stage.agent}이 org.yaml에 없다 (R4)"
-            )
+        for name in (stage.agent, stage.check):
+            if name is not None and name not in org.agents:
+                raise PipelineError(f"{pipeline.key}: {stage.id}의 {name}이 org.yaml에 없다 (R4)")
+        if stage.check is not None:
+            lead = org.teams[org.agents[stage.agent].team].lead
+            if stage.check == stage.agent or stage.check != lead:
+                raise PipelineError(
+                    f"{pipeline.key}: {stage.id}의 check는 {stage.agent}의 팀장({lead})이어야 "
+                    "하고 담당과 달라야 한다 (R6)"
+                )
         if stage.kind.writes and org.engine(stage.agent) == "codex":
             raise PipelineError(
                 f"{pipeline.key}: {stage.id}는 쓰기 단계라 "
                 f"Codex 엔진({stage.agent})이 맡을 수 없다 (R4)"
             )
     authors = {s.agent for s in pipeline.stages if s.kind in _AUTHORING_KINDS and s.agent}
+    authors |= {s.check for s in pipeline.stages if s.kind in _AUTHORING_KINDS and s.check}
     for stage in pipeline.stages:
         if stage.kind is StageKind.REVIEW and stage.agent in authors:
             raise PipelineError(
@@ -227,13 +245,13 @@ _DEFAULTS: dict[str, dict] = {
             {"id": "ui", "kind": "ui_design", "agent": "gamma", "when": "has_ui_change"},
             {"id": "approve_ui", "kind": "gate", "when": "has_ui_change"},
             {"id": "design", "kind": "design", "agent": "alpha"},
-            {"id": "implement", "kind": "implement", "agent": "alpha"},
+            {"id": "implement", "kind": "implement", "agent": "epsilon", "check": "alpha"},
             {"id": "test", "kind": "test"},
             {"id": "review", "kind": "review", "agent": "delta"},
             {"id": "merge", "kind": "merge_gate"},
             {"id": "docs", "kind": "doc_sync", "agent": "beta"},
         ],
-        "budget": {"max_calls": 25, "max_minutes": 240},
+        "budget": {"max_calls": 35, "max_minutes": 300},
     },
     "bugfix": {
         "name": "버그 수정",
@@ -241,14 +259,14 @@ _DEFAULTS: dict[str, dict] = {
         "triggers": ["discord_task"],
         "priority": "bugfix",
         "stages": [
-            {"id": "diagnose", "kind": "diagnose", "agent": "delta"},
+            {"id": "diagnose", "kind": "diagnose", "agent": "zeta", "check": "delta"},
             {"id": "approve", "kind": "gate"},
-            {"id": "implement", "kind": "implement", "agent": "alpha"},
+            {"id": "implement", "kind": "implement", "agent": "epsilon", "check": "alpha"},
             {"id": "test", "kind": "test"},
             {"id": "review", "kind": "review", "agent": "delta"},
             {"id": "merge", "kind": "merge_gate"},
         ],
-        "budget": {"max_calls": 12, "max_minutes": 120},
+        "budget": {"max_calls": 18, "max_minutes": 150},
     },
     "release": {
         "name": "출시",
@@ -269,10 +287,16 @@ _DEFAULTS: dict[str, dict] = {
         "priority": "bugfix",
         "stages": [
             {"id": "test", "kind": "test"},
-            {"id": "diagnose", "kind": "diagnose", "agent": "delta", "when": "test_failed"},
+            {
+                "id": "diagnose",
+                "kind": "diagnose",
+                "agent": "zeta",
+                "check": "delta",
+                "when": "test_failed",
+            },
             {"id": "report", "kind": "report"},
         ],
-        "budget": {"max_calls": 3, "max_minutes": 30},
+        "budget": {"max_calls": 6, "max_minutes": 45},
     },
 }
 

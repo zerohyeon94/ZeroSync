@@ -164,7 +164,7 @@ def with_format_error(prompt: str, error: str) -> str:
     )
 
 
-# 흐름의 단계: 기획, 화면 디자인, 설계, 진단, 구현, 수정, 리뷰, 출시 준비, 문서 반영
+# 흐름의 단계: 기획, 화면 디자인, 설계, 진단, 구현, 수정, 팀장 확인, 리뷰, 출시 준비, 문서 반영
 
 
 def _persona(persona: Persona) -> dict[str, str]:
@@ -439,6 +439,40 @@ def review_prompt(
         tests=tests.strip(),
         previous=previous,
         diff=diff,
+        schema=_schema(Review),
+    )
+
+
+def lead_check_prompt(
+    persona: Persona,
+    *,
+    member: str,
+    label: str,
+    title: str,
+    decision: str,
+    round_: int,
+    limit: int,
+    spec: str,
+    subject: str,
+    previous_required: str = "",
+) -> str:
+    previous = ""
+    if previous_required:
+        previous = _section(
+            "지난 확인의 [필수] 지적",
+            previous_required + "\n\n각 항목이 해결됐는지 확인한다. 등급을 낮춰 넘기지 않는다",
+        )
+    return _template("lead_check").substitute(
+        _persona(persona),
+        member=member,
+        label=label,
+        title=title.strip(),
+        round=round_,
+        limit=limit,
+        decision=decision.strip(),
+        spec=_section("승인된 기획과 설계", spec),
+        previous=previous,
+        subject=subject.strip(),
         schema=_schema(Review),
     )
 

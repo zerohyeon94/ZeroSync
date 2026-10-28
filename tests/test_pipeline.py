@@ -46,7 +46,14 @@ def test_defaults_follow_adr_007():
         StageKind.GATE,
     ]
     assert feature.first_of(StageKind.REVIEW).agent == "delta"
-    assert feature.implementer == "alpha"
+    # 팀원이 실행하고 팀장이 확인한다 (ADR-008)
+    implement = feature.first_of(StageKind.IMPLEMENT)
+    assert (implement.agent, implement.check) == ("epsilon", "alpha")
+    diagnose = pipelines["bugfix"].first_of(StageKind.DIAGNOSE)
+    assert (diagnose.agent, diagnose.check) == ("zeta", "delta")
+    assert pipelines["bugfix"].implementer == "epsilon"
+    nightly = pipelines["nightly-test"].first_of(StageKind.DIAGNOSE)
+    assert (nightly.agent, nightly.check) == ("zeta", "delta")
     assert pipelines["bugfix"].priority_rank < pipelines["release"].priority_rank
     assert pipelines["nightly-test"].schedule == "0 3 * * *"
 
@@ -69,13 +76,21 @@ def test_load_from_company_folder(tmp_path):
         ("  - {id: merge, kind: merge_gate}\n", "", "R3"),
         ("agent: delta, rounds: 3", "agent: alpha, rounds: 3", "R1"),
         ("agent: delta, rounds: 3", "agent: beta, rounds: 3", "R1"),
-        ("{id: design, kind: design, agent: alpha}", "{id: design, kind: design, agent: zeta}", "R4"),  # noqa: E501
+        ("{id: design, kind: design, agent: alpha}", "{id: design, kind: design, agent: omega}", "R4"),  # noqa: E501
         ("{id: test, kind: test, retries: 2}", "{id: test, kind: test, agent: alpha}", "agent를 두지"),  # noqa: E501
         ("{id: plan, kind: plan, agent: beta}", "{id: plan, kind: plan}", "agent가 없다"),
         ("triggers: [discord_task]", "triggers: [schedule]", "schedule"),
         ("triggers: [discord_task]", "triggers: [slack]", "triggers"),
         ("  - {id: approve, kind: gate}\n", "  - {id: approve, kind: gate}\n  - {id: again, kind: gate}\n", "gate는"),  # noqa: E501
         ("id: review,", "id: test,", "겹친다"),
+        # 팀장 확인 (R6, ADR-008)
+        ("agent: alpha}\n  - {id: test", "agent: epsilon, check: delta}\n  - {id: test", "R6"),
+        ("agent: alpha}\n  - {id: test", "agent: alpha, check: alpha}\n  - {id: test", "R6"),
+        ("agent: alpha}\n  - {id: test", "agent: epsilon, check: omega}\n  - {id: test", "R4"),
+        ("{id: plan, kind: plan, agent: beta}", "{id: plan, kind: plan, agent: beta, check: alpha}", "R6"),  # noqa: E501
+        ("agent: alpha}\n  - {id: test", "agent: epsilon, check_rounds: 2}\n  - {id: test", "check_rounds"),  # noqa: E501
+        # 구현을 확인한 팀장은 작성 담당이므로 리뷰를 맡지 못한다
+        ("agent: alpha}\n  - {id: test", "agent: zeta, check: delta}\n  - {id: test", "R1"),
     ],
 )  # fmt: skip
 def test_rule_violations(tmp_path, old, new, message):

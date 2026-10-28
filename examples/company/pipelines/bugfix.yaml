@@ -7,12 +7,14 @@ priority: bugfix
 stages:
 - id: diagnose
   kind: diagnose
-  agent: delta
+  agent: zeta
+  check: delta               # 팀원 결과를 팀장이 확인한다 (ADR-008)
 - id: approve
   kind: gate
 - id: implement
   kind: implement
-  agent: alpha
+  agent: epsilon
+  check: alpha
 - id: test
   kind: test
 - id: review
@@ -21,5 +23,5 @@ stages:
 - id: merge
   kind: merge_gate
 budget:
-  max_calls: 12
-  max_minutes: 120
+  max_calls: 18
+  max_minutes: 150

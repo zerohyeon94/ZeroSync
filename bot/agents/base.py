@@ -26,6 +26,7 @@ class Stage(StrEnum):
     IMPLEMENT = "implement"
     FIX = "fix"
     REVIEW = "review"
+    LEAD_CHECK = "lead_check"  # 팀원 결과를 팀장이 확인 (ADR-008)
     RELEASE_PREP = "release_prep"
     DOC_SYNC = "doc_sync"
 

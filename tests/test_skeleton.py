@@ -38,7 +38,9 @@ def write_projects(tmp_path):
         "    vault_slug: g\n"
         "paths:\n"
         "  vault_projects: /vault\n"
-        f"  db: {tmp_path / 'state' / 'zerosync.db'}\n",
+        f"  db: {tmp_path / 'state' / 'zerosync.db'}\n"
+        # 이 맥의 실제 회사 설정을 읽지 않게 없는 경로로 둔다
+        f"  company: {tmp_path / 'company'}\n",
         encoding="utf-8",
     )
     return path

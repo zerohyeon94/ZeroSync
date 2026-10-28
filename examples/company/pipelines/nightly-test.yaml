@@ -9,10 +9,11 @@ stages:
   kind: test
 - id: diagnose
   kind: diagnose
-  agent: delta
+  agent: zeta
+  check: delta
   when: test_failed
 - id: report
   kind: report
 budget:
-  max_calls: 3
-  max_minutes: 30
+  max_calls: 6
+  max_minutes: 45

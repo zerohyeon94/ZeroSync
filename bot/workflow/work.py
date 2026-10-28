@@ -30,6 +30,7 @@ from bot.prompts import (
     doc_sync_prompt,
     fix_prompt,
     implement_prompt,
+    lead_check_prompt,
     plan_prompt,
     plan_text,
     release_prep_prompt,
@@ -48,6 +49,7 @@ from bot.render.work import (
     render_findings,
     render_implementation,
     render_issue_body,
+    render_lead_check,
     render_plan,
     render_pr_body,
     render_release_prep,
@@ -97,6 +99,7 @@ TYPE_LABELS = {
 # 리뷰 프롬프트에 넣는 diff 최대 길이. 넘으면 잘라 내고 표시한다
 MAX_DIFF_CHARS = 80_000
 APPROVE_HINT = "\n\n`/approve`로 승인하거나 `/revise <요청>`으로 고친다."
+DIAGNOSIS_HINT = "\n\n`/approve`로 수정 방향을 승인하거나 `/revise <요청>`으로 다시 진단한다."
 _VERSION = re.compile(r"\d+(?:\.\d+){1,3}")
 
 PromptFor = Callable[[TaskRecord, "list[str] | None", "ChangeSummary | None", str], Awaitable[str]]
@@ -125,6 +128,7 @@ class WorkStages:
     _side_effect: Any
     _advance: Any
     _pipeline: Any
+    _limits: Any
 
     # 공통
 
@@ -523,6 +527,24 @@ class WorkStages:
     # 진단 (QA팀, 읽기 전용)
 
     async def _diagnose(self, task_id: int, stage: StageDecl, revision: str) -> Outcome:
+        note = f"Zero의 수정 요청: {revision}" if revision else ""
+        outcome = await self._diagnose_once(task_id, stage, note, revision)
+
+        async def subject() -> str:
+            report = await self._diagnosis(task_id)
+            return diagnosis_text(report) if report else "진단 보고가 없다"
+
+        async def again(problems: str) -> Outcome:
+            return await self._diagnose_once(task_id, stage, problems, revision)
+
+        return await self._lead_checked(
+            task_id, stage, "진단", outcome, subject, again, approve_hint=DIAGNOSIS_HINT
+        )
+
+    async def _diagnose_once(
+        self, task_id: int, stage: StageDecl, note: str, revision: str
+    ) -> Outcome:
+        """진단 1회. note는 Zero의 수정 요청이나 팀장 확인 지적이다."""
         task = await self._repo.get_task(task_id)
         pipeline = self._pipe(task)
         implement = pipeline.first_of(StageKind.IMPLEMENT)
@@ -549,8 +571,8 @@ class WorkStages:
         agent = stage.agent
         await self._say(task, f"{self._name(agent)}이 진단을 시작한다.")
         decision = await self._decision(task_id)
-        if revision:
-            decision += f"\n\nZero의 수정 요청: {revision}"
+        if note:
+            decision += f"\n\n{note}"
         prompt = diagnose_prompt(
             await self._persona(agent),
             title=task.title,
@@ -574,12 +596,12 @@ class WorkStages:
         text = render_diagnosis(report)
         if task.issue_number is not None:
             await self._github(task).comment_issue(task.issue_number, text)
-        gate = self._next_is_gate(task, stage)
-        hint = "\n\n`/approve`로 수정 방향을 승인하거나 `/revise <요청>`으로 다시 진단한다."
+        # 팀장 확인이 있으면 승인 안내는 확인을 통과한 뒤에 붙인다
+        gate = self._next_is_gate(task, stage) and stage.check is None
         message_id = await self._post(
             task,
             agent,
-            text + (hint if gate else ""),
+            text + (DIAGNOSIS_HINT if gate else ""),
             Moment.DESIGN_READY if gate else Moment.STAGE_DONE,
         )
         payload = {"report": report.model_dump(mode="json"), "revision": revision}
@@ -608,7 +630,8 @@ class WorkStages:
             spec=await self._spec_text(task_id),
         )
         await self._say(task, f"{self._name(agent)}이 구현을 시작한다.", Moment.IMPLEMENT_STARTED)
-        return await self._work(task, agent, Stage.IMPLEMENT, prompt, EventKind.IMPL, {}, "구현")
+        outcome = await self._work(task, agent, Stage.IMPLEMENT, prompt, EventKind.IMPL, {}, "구현")
+        return await self._code_checked(task_id, stage, "구현", outcome)
 
     async def _fix(self, task_id: int, source: FixSource) -> Outcome:
         task = await self._repo.get_task(task_id)
@@ -631,14 +654,23 @@ class WorkStages:
             FixSource.TESTS: "테스트 실패",
             FixSource.REVIEW: "리뷰 [필수] 지적",
             FixSource.RECOMMENDED: "[권장] 지적",
+            FixSource.LEAD_CHECK: "팀장 확인 [필수] 지적",
         }
         await self._say(
             task, f"{self._name(agent)}이 고친다: {labels[source]}", Moment.IMPLEMENT_STARTED
         )
         payload = {"source": source.value}
-        return await self._work(task, agent, Stage.FIX, prompt, EventKind.FIX, payload, "수정")
+        outcome = await self._work(task, agent, Stage.FIX, prompt, EventKind.FIX, payload, "수정")
+        implement = self._pipe(task).first_of(StageKind.IMPLEMENT)
+        assert implement is not None  # 수정은 구현 단계가 있는 흐름에서만 일어난다
+        return await self._code_checked(task_id, implement, "수정", outcome)
 
     async def _fix_problems(self, task: TaskRecord, source: FixSource) -> str:
+        if source is FixSource.LEAD_CHECK:
+            payload = await self._latest(task.id, EventKind.LEAD_CHECK)
+            if payload is None:
+                raise RuntimeError("팀장 확인 결과가 없다")
+            return self._lead_problems(payload["lead"], Review.model_validate(payload["review"]))
         if source is FixSource.TESTS:
             tests = await self._latest_tests(task.id)
             body = render_test_report(tests) if tests else "테스트 결과가 없다"
@@ -706,6 +738,134 @@ class WorkStages:
             "commits": [commit.sha for commit in commits[before:]],
         }
         return StageSucceeded(), NewEvent(agent, kind, data, message_id)
+
+    # 팀장 확인 (ADR-008)
+
+    def _lead_problems(self, lead: str, review: Review) -> str:
+        text = (
+            f"{self._name(lead)}(팀장)의 확인 [필수] 지적 (번호마다 대응한다):\n\n"
+            + render_findings(review.required_findings)
+        )
+        if review.recommended_findings:
+            text += "\n\n참고: [권장] 지적 (반영 여부는 판단에 맡긴다)\n\n" + render_findings(
+                review.recommended_findings
+            )
+        return text
+
+    async def _code_checked(
+        self, task_id: int, stage: StageDecl, label: str, outcome: Outcome
+    ) -> Outcome:
+        """구현·수정 결과의 팀장 확인. 지적이 있으면 구현 담당이 같은 세션에서 고친다."""
+
+        async def subject() -> str:
+            task = await self._repo.get_task(task_id)
+            report = await self._latest_report(task_id)
+            diff = await self._git.diff(self._worktree(task), self._project(task).base_branch)
+            if len(diff) > MAX_DIFF_CHARS:
+                diff = (
+                    diff[:MAX_DIFF_CHARS] + "\n... (diff가 길어 잘랐다. 나머지는 저장소에서 읽는다)"
+                )
+            body = render_implementation(report, heading=label) if report else "보고 없음"
+            return f"{body}\n\n변경 (develop 대비 diff):\n\n```diff\n{diff}\n```"
+
+        async def again(problems: str) -> Outcome:
+            task = await self._repo.get_task(task_id)
+            agent = stage.agent
+            prompt = fix_prompt(
+                await self._persona(agent),
+                title=task.title,
+                issue=task.issue_number,
+                branch=task.branch,
+                spec_docs=await self._spec_docs(task_id),
+                problems=problems,
+            )
+            await self._say(
+                task,
+                f"{self._name(agent)}이 고친다: 팀장 확인 [필수] 지적",
+                Moment.IMPLEMENT_STARTED,
+            )
+            payload = {"source": FixSource.LEAD_CHECK.value}
+            return await self._work(task, agent, Stage.FIX, prompt, EventKind.FIX, payload, "수정")
+
+        return await self._lead_checked(task_id, stage, label, outcome, subject, again)
+
+    async def _lead_checked(
+        self,
+        task_id: int,
+        stage: StageDecl,
+        label: str,
+        outcome: Outcome,
+        subject: Callable[[], Awaitable[str]],
+        again: Callable[[str], Awaitable[Outcome]],
+        *,
+        approve_hint: str = "",
+    ) -> Outcome:
+        """팀원 결과를 팀장(stage.check)이 확인한다. 팀장 확인이 없는 단계는 그대로 돌려준다.
+
+        [필수] 지적이 있으면 팀원이 고치고 다시 확인한다. 중간 결과는 바로 기록하고
+        마지막 확인 결과를 단계 결과로 돌려준다. 정해진 횟수 안에 통과하지 못하면 단계 실패다.
+        """
+        lead = stage.check
+        if lead is None:
+            return outcome
+        limit = stage.check_rounds or self._limits.max_check_rounds
+        previous = ""
+        for round_ in range(1, limit + 1):
+            event, record = outcome
+            if not isinstance(event, StageSucceeded):
+                return outcome
+            await self._repo.add_event(task_id, record)
+            task = await self._repo.get_task(task_id)
+            prompt = lead_check_prompt(
+                await self._persona(lead),
+                member=self._name(stage.agent),
+                label=label,
+                title=task.title,
+                decision=await self._decision(task_id),
+                round_=round_,
+                limit=limit,
+                spec=await self._spec_text(task_id),
+                subject=await subject(),
+                previous_required=previous,
+            )
+            await self._say(task, f"{self._name(lead)}이 {label} 결과를 확인한다.")
+            answer = await self._ask(
+                task,
+                lead,
+                Stage.LEAD_CHECK,
+                prompt,
+                model=Review,
+                cwd=Path(task.worktree) if task.worktree else None,
+            )
+            if answer.result is None:
+                return await self._failed(task, "팀장 확인", answer)
+            review: Review = answer.result
+            approved = not review.required_findings
+            gate = approved and self._next_is_gate(task, stage)
+            message_id = await self._post(
+                task,
+                lead,
+                render_lead_check(review, label=label, round_=round_)
+                + (approve_hint if gate else ""),
+                Moment.DESIGN_READY if gate else Moment.STAGE_DONE,
+            )
+            payload = {
+                "review": review.model_dump(mode="json"),
+                "round": round_,
+                "stage": stage.id,
+                "lead": lead,
+                "member": stage.agent,
+            }
+            record = NewEvent(lead, EventKind.LEAD_CHECK, payload, message_id or None)
+            if approved:
+                return StageSucceeded(event.flags), record
+            if round_ == limit:
+                reason = f"{label} 팀장 확인을 {limit}회 통과하지 못했다"
+                return StageFailed(reason), record
+            await self._repo.add_event(task_id, record)
+            previous = render_findings(review.required_findings)
+            outcome = await again(self._lead_problems(lead, review))
+        raise AssertionError("unreachable")  # pragma: no cover
 
     # 테스트 (운영 규약 1.7)
 

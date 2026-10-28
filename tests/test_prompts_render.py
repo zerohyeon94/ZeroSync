@@ -12,6 +12,7 @@ from bot.org import DEFAULT_ORG
 from bot.prompts import (
     HistoryEntry,
     debate_prompt,
+    lead_check_prompt,
     opinion_prompt,
     persona_for,
     with_format_error,
@@ -87,6 +88,22 @@ def test_debate_prompt_snapshot():
         history=HISTORY,
     )
     check_snapshot("debate_beta", prompt)
+
+
+def test_lead_check_prompt_snapshot():
+    prompt = lead_check_prompt(
+        ALPHA,
+        member="Epsilon · 개발팀원",
+        label="구현",
+        title="예산 배너",
+        decision="예산을 넘으면 배너를 띄운다",
+        round_=2,
+        limit=2,
+        spec="설계서: `docs/설계/42-budget-banner.md`",
+        subject="**구현** — 배너를 추가했다",
+        previous_required="1. [필수] HomeView.swift:3 — 경계값",
+    )
+    check_snapshot("lead_check_alpha", prompt)
 
 
 def test_personas_come_from_org():
