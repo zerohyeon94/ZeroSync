@@ -1,0 +1,18 @@
+# 정기 테스트 흐름 (SPEC 3.5). 봇의 기본 선언과 같다. 파일 이름이 파이프라인 키다
+name: 정기 테스트
+triggers:
+- schedule
+schedule: 0 3 * * *
+priority: bugfix
+stages:
+- id: test
+  kind: test
+- id: diagnose
+  kind: diagnose
+  agent: delta
+  when: test_failed
+- id: report
+  kind: report
+budget:
+  max_calls: 3
+  max_minutes: 30

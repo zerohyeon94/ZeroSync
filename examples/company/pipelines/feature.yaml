@@ -1,0 +1,38 @@
+# 기능 개발 흐름 (SPEC 3.5). 봇의 기본 선언과 같다. 파일 이름이 파이프라인 키다
+name: 기능 개발
+command: /task feature
+triggers:
+- discord_task
+priority: feature
+stages:
+- id: plan
+  kind: plan
+  agent: beta
+- id: approve
+  kind: gate
+- id: ui
+  kind: ui_design
+  agent: gamma
+  when: has_ui_change
+- id: approve_ui
+  kind: gate
+  when: has_ui_change
+- id: design
+  kind: design
+  agent: alpha
+- id: implement
+  kind: implement
+  agent: alpha
+- id: test
+  kind: test
+- id: review
+  kind: review
+  agent: delta
+- id: merge
+  kind: merge_gate
+- id: docs
+  kind: doc_sync
+  agent: beta
+budget:
+  max_calls: 25
+  max_minutes: 240

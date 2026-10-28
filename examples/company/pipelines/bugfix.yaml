@@ -1,0 +1,25 @@
+# 버그 수정 흐름 (SPEC 3.5). 봇의 기본 선언과 같다. 파일 이름이 파이프라인 키다
+name: 버그 수정
+command: /task bug
+triggers:
+- discord_task
+priority: bugfix
+stages:
+- id: diagnose
+  kind: diagnose
+  agent: delta
+- id: approve
+  kind: gate
+- id: implement
+  kind: implement
+  agent: alpha
+- id: test
+  kind: test
+- id: review
+  kind: review
+  agent: delta
+- id: merge
+  kind: merge_gate
+budget:
+  max_calls: 12
+  max_minutes: 120

@@ -1,5 +1,7 @@
 """파이프라인 선언 테스트 (SPEC 3.5, R1~R5)."""
 
+from pathlib import Path
+
 import pytest
 
 from bot.org import DEFAULT_ORG
@@ -119,3 +121,9 @@ def test_bad_schedule_and_duplicate_commands(tmp_path):
     write(tmp_path)
     with pytest.raises(PipelineError, match="command"):
         load_pipelines(tmp_path, DEFAULT_ORG)
+
+
+def test_example_company_pipelines_match_defaults():
+    """examples/company/pipelines는 기본 선언을 그대로 옮긴 것이다. 한쪽만 바꾸지 않는다."""
+    example = Path(__file__).resolve().parent.parent / "examples" / "company"
+    assert load_pipelines(example, DEFAULT_ORG) == default_pipelines()
