@@ -5,6 +5,7 @@ force push는 하지 않는다. 작업은 봇 전용 worktree에서 한다 (운�
 """
 
 import asyncio
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -85,3 +86,19 @@ class GitOps:
     async def delete_remote_branch(self, path: Path, branch: str, *, recorded: str | None) -> None:
         check_push(branch, recorded)
         await run_git("push", "origin", "--delete", branch, cwd=path)
+
+
+class VaultGit:
+    """볼트가 git 저장소면 봇이 쓴 파일만 커밋한다 (운영 규약 3.4). push는 하지 않는다.
+
+    Zero가 볼트에서 따로 고치던 파일은 경로를 지정해 커밋하므로 섞이지 않는다.
+    """
+
+    async def commit(self, root: Path, paths: Sequence[str], title: str, trailer: str) -> bool:
+        try:
+            await run_git("rev-parse", "--is-inside-work-tree", cwd=root)
+        except GitError:
+            return False  # git이 아닌 볼트는 파일만 쓴다
+        await run_git("add", "--", *paths, cwd=root)
+        await run_git("commit", "-q", "-m", title, "-m", trailer, "--only", "--", *paths, cwd=root)
+        return True

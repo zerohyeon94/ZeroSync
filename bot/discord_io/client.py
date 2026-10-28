@@ -27,7 +27,7 @@ from bot.discord_io.rules import (
     classify,
     command_error,
 )
-from bot.github import GitHubClient
+from bot.github import GitHubClient, VaultGit
 from bot.render.status import render_ping, render_status
 from bot.reports import Report, morning_report, weekly_report
 from bot.scheduler import BUILTIN_SCHEDULES, MORNING_REPORT, is_due, parse_cron
@@ -124,6 +124,7 @@ class ZeroSyncBot(discord.Client):
             clock=self.clock,
             gate=AgentGate(config.limits.concurrent_agents),
             usage_pause=timedelta(minutes=config.limits.usage_pause_minutes),
+            vault=VaultGit(),
         )
         self._webhooks: dict[int, discord.Webhook] = {}
         self._background: set[asyncio.Task[None]] = set()
