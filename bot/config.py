@@ -26,6 +26,7 @@ from pydantic import (
 )
 
 from bot.agents.base import Stage
+from bot.org import Org, OrgError, load_org
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 DEFAULT_PROJECTS_PATH = PACKAGE_DIR / "projects.yaml"
@@ -96,6 +97,8 @@ class PathsConfig(_Model):
     worktrees: ExpandedPath = Path("~/.zerosync/worktrees")
     runs: ExpandedPath = Path("~/.zerosync/runs")
     db: ExpandedPath = Path("~/.zerosync/zerosync.db")
+    # 비공개 회사 설정 저장소 (org.yaml, agents/). 없으면 기본 조직을 쓴다 (SPEC 9.1-1)
+    company: ExpandedPath = Path("~/.zerosync/company")
 
     @property
     def lock(self) -> Path:
@@ -185,6 +188,7 @@ class Config(_Model):
     cli: CliConfig
     limits: LimitsConfig
     secrets: Secrets
+    org: Org
 
     def project_for_forum(self, channel_id: str) -> str | None:
         """포럼 채널 ID로 프로젝트 키를 찾는다. 등록되지 않은 채널이면 None."""
@@ -251,12 +255,17 @@ def load_config(
         secrets = Secrets.model_validate({key.lower(): value for key, value in merged.items()})
     except ValidationError as error:
         raise ConfigError(_describe(error)) from None
+    try:
+        org = load_org(projects.paths.company)
+    except OrgError as error:
+        raise ConfigError(str(error)) from None
     return Config(
         projects=projects.projects,
         paths=projects.paths,
         cli=projects.cli,
         limits=projects.limits,
         secrets=secrets,
+        org=org,
     )
 
 

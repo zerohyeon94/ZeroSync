@@ -62,7 +62,13 @@ ALTER TABLE tasks ADD COLUMN test_limit_bonus INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE tasks ADD COLUMN recommended_fixed INTEGER NOT NULL DEFAULT 0;
 """
 
-MIGRATIONS: tuple[str, ...] = (_V1, _V2)
+# v3: 에이전트 이름과 엔진 분리 (ADR-006 4절). agent_runs.agent는 에이전트 이름, engine은 실행 엔진
+_V3 = """
+ALTER TABLE agent_runs ADD COLUMN engine TEXT;
+UPDATE agent_runs SET engine = agent WHERE agent IN ('claude', 'codex');
+"""
+
+MIGRATIONS: tuple[str, ...] = (_V1, _V2, _V3)
 SCHEMA_VERSION = len(MIGRATIONS)
 
 

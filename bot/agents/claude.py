@@ -16,7 +16,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from bot.agents.base import AgentName, AgentRequest, AgentResult, RunStatus, Stage
+from bot.agents.base import AgentRequest, AgentResult, EngineName, RunStatus, Stage
 from bot.agents.process import ProcessResult, ProcessRunner
 
 READ_TOOLS = ("Read", "Glob", "Grep")
@@ -44,7 +44,7 @@ DENIED_TOOLS = (
 
 
 class ClaudeCliRunner:
-    name: AgentName = "claude"
+    name: EngineName = "claude"
 
     def __init__(
         self,
@@ -68,7 +68,7 @@ class ClaudeCliRunner:
         ]
         argv += _permission_args(request)
         argv += ["--disallowedTools", *DENIED_TOOLS]
-        if model := self._models.get(request.stage):
+        if model := request.model or self._models.get(request.stage):
             argv += ["--model", model]
         if request.output_schema is not None:
             argv += ["--json-schema", json.dumps(request.output_schema, ensure_ascii=False)]

@@ -95,7 +95,7 @@ def test_post_starts_opinions_with_independent_first_opinions():
     result = start_task(PostCreated("예산 배너", "홈에 예산 초과 배너를 띄우자"))
     assert result.state is TaskState.OPINIONS
     assert result.effects == (
-        RequestOpinions(("claude", "codex"), "홈에 예산 초과 배너를 띄우자", with_history=False),
+        RequestOpinions(("beta", "alpha"), "홈에 예산 초과 배너를 띄우자", with_history=False),
     )
     assert result.updates == {"opinion_rounds": 0}
 
@@ -107,7 +107,7 @@ def test_message_asks_both_with_history_and_counts_question():
     result = transition(Task(opinion_rounds=2), ZeroMessage("  성능은 괜찮을까?  "))
     assert result.state is TaskState.OPINIONS
     assert result.effects == (
-        RequestOpinions(("claude", "codex"), "성능은 괜찮을까?", with_history=True),
+        RequestOpinions(("beta", "alpha"), "성능은 괜찮을까?", with_history=True),
     )
     assert result.updates == {"opinion_rounds": 3}
 
@@ -115,10 +115,11 @@ def test_message_asks_both_with_history_and_counts_question():
 @pytest.mark.parametrize(
     ("text", "agent", "question"),
     [
-        ("@claude 설계 관점은?", "claude", "설계 관점은?"),
-        ("@codex 반례는?", "codex", "반례는?"),
-        ("  @Codex\n반례는?", "codex", "반례는?"),
-        ("@claude", "claude", ""),
+        ("@beta 설계 관점은?", "beta", "설계 관점은?"),
+        ("@alpha 반례는?", "alpha", "반례는?"),
+        ("  @Alpha\n반례는?", "alpha", "반례는?"),
+        ("@delta 확인 기준은?", "delta", "확인 기준은?"),
+        ("@beta", "beta", ""),
     ],
 )
 def test_mention_asks_only_that_agent(text, agent, question):
@@ -127,10 +128,10 @@ def test_mention_asks_only_that_agent(text, agent, question):
     assert result.updates == {"opinion_rounds": 1}
 
 
-@pytest.mark.parametrize("text", ["@claudette 안녕", "질문 @claude", "@ codex 뭐"])
+@pytest.mark.parametrize("text", ["@betamax 안녕", "질문 @beta", "@ alpha 뭐", "@claude 옛 이름"])
 def test_text_that_is_not_a_leading_mention_goes_to_both(text):
     result = transition(Task(), ZeroMessage(text))
-    assert result.effects[0].agents == ("claude", "codex")
+    assert result.effects[0].agents == ("beta", "alpha")
 
 
 def test_awaiting_decision_notice_once_when_questions_exceed_five():

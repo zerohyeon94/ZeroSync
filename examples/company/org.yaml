@@ -1,0 +1,68 @@
+# 회사 조직 설정 예시 (SPEC 9.1-1, ADR-007).
+# 실제 설정은 비공개 회사 저장소(기본 ~/.zerosync/company)에 두고 이 파일을 복사해 쓴다.
+# 조직은 Zero만 바꾼다. 팀장은 채용을 제안만 한다 (운영 규약 1.12).
+
+teams:
+  planning: {name: 기획, lead: beta}
+  design: {name: 디자인, lead: gamma}
+  dev: {name: 개발, lead: alpha}
+  qa: {name: QA, lead: delta}
+
+agents:
+  beta:
+    display: Beta
+    team: planning
+    title: 팀장                # 표시 이름 [Beta · 기획팀장]
+    engine: claude             # claude | codex (codex는 읽기 전용 일만)
+    mbti: INFJ
+    perspective: 누구의 어떤 문제인가, 사용 흐름, 범위와 우선순위, 기존 기능·용어와의 일관성
+    basic_question: 이것을 써야 하는가, 어디까지 할 것인가
+    persona: agents/beta.md
+    models: {opinion: opus, doc_sync: sonnet}
+    daily_calls: 30
+    hired: 2026-10-26
+    reason: 초기 구성 (ADR-006)
+  gamma:
+    display: Gamma
+    team: design
+    engine: claude
+    mbti: ISFP
+    perspective: 화면 구성, 빈 화면·로딩·오류·큰 글씨 상태, 디자인 시스템과의 일관성
+    basic_question: 사용자가 화면에서 헤매지 않는가
+    persona: agents/gamma.md
+    models: {opinion: opus}
+    daily_calls: 30
+    hired: 2026-10-28
+    reason: 화면 디자인 담당 (ADR-007)
+  alpha:
+    display: Alpha
+    team: dev
+    engine: claude
+    mbti: INTJ
+    perspective: 구조와 변경 범위, 구현 난이도, 실행 위험, 엣지 케이스, 테스트 방법
+    basic_question: 만들 수 있는가, 왜 실패할 수 있나, 더 작게 할 수 있나
+    persona: agents/alpha.md
+    models: {opinion: opus, design: opus, implement: sonnet, fix: sonnet}
+    daily_calls: 30
+    hired: 2026-10-26
+    reason: 초기 구성 (ADR-006)
+  delta:
+    display: Delta
+    team: qa
+    engine: claude
+    mbti: ISTJ
+    perspective: 확인 기준, 빠진 경우, 회귀 위험, 코드 품질(동시성·메모리·오류 처리)
+    basic_question: 무엇을 보면 됐다고 할 수 있나
+    persona: agents/delta.md
+    models: {opinion: opus, review: opus}
+    daily_calls: 30
+    hired: 2026-10-28
+    reason: 검증과 테스트 진단 (ADR-007)
+
+# 기능 개발 흐름의 단계별 담당 (Phase 5에서 pipelines/*.yaml로 옮긴다)
+roles:
+  opinions: [beta, alpha]      # 아무도 부르지 않았을 때 답하는 팀장
+  design: alpha
+  implement: alpha
+  review: delta                # 설계·구현 담당과 달라야 한다 (R1)
+  doc_sync: beta

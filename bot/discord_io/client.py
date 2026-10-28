@@ -14,7 +14,7 @@ from typing import Any
 import discord
 from discord import app_commands
 
-from bot.agents.base import AgentName, AgentRunner
+from bot.agents.base import AgentRunner, EngineName
 from bot.clock import Clock, SystemClock
 from bot.config import Config
 from bot.discord_io.chat import DiscordChat
@@ -57,7 +57,7 @@ class ZeroSyncBot(discord.Client):
         self,
         config: Config,
         repo: Repository,
-        runners: Mapping[AgentName, AgentRunner],
+        runners: Mapping[EngineName, AgentRunner],
         *,
         clock: Clock | None = None,
         git: Any = None,
@@ -80,6 +80,7 @@ class ZeroSyncBot(discord.Client):
             zero_user_id=self.zero_user_id,
             webhook_for=self._webhook_for,
             ops_channel=self._ops_channel,
+            org=config.org,
         )
         self.engine = Engine(
             repo,
@@ -87,6 +88,7 @@ class ZeroSyncBot(discord.Client):
             runners,
             project_contexts(config),
             timeout_sec=config.limits.cli_timeout_sec,
+            org=config.org,
             git=git,
             tests=tests,
             limits=Limits(
@@ -131,7 +133,8 @@ class ZeroSyncBot(discord.Client):
         await self.engine.prepare_github()
         self._merge_poller = asyncio.create_task(self._poll_merges())
         await self.chat.notify_ops(
-            f"ZeroSync 봇을 시작했다. 프로젝트: {', '.join(self.config.projects)}",
+            f"ZeroSync 봇을 시작했다. 프로젝트: {', '.join(self.config.projects)}. "
+            f"조직: {', '.join(self.config.org.display(a) for a in self.config.org.agent_names)}",
             mention=should_mention(Moment.NOTICE),
         )
 
@@ -293,7 +296,7 @@ class ZeroSyncBot(discord.Client):
 def _register_commands(bot: ZeroSyncBot) -> None:
     tree, guild = bot.tree, bot.guild_ref
 
-    @tree.command(name="debate", description="두 에이전트가 서로의 의견에 반박 1회", guild=guild)
+    @tree.command(name="debate", description="두 팀장이 서로의 의견에 반박 1회", guild=guild)
     async def debate(interaction: discord.Interaction) -> None:
         await bot.run_command(interaction, CommandName.DEBATE)
 
@@ -346,7 +349,7 @@ async def run_bot(config: Config) -> None:
     conn = await connect(config.paths.db)
     try:
         process = ProcessRunner(config.paths.runs)
-        runners: dict[AgentName, AgentRunner] = {
+        runners: dict[EngineName, AgentRunner] = {
             "claude": ClaudeCliRunner(process, config.cli.claude, config.cli.claude_models),
             "codex": CodexCliRunner(process, config.cli.codex, config.cli.codex_models),
         }

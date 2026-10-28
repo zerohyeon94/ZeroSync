@@ -11,7 +11,8 @@ from typing import Any, Protocol
 
 import discord
 
-from bot.discord_io.rules import AUTHOR_NAMES, mention_text, split_text
+from bot.discord_io.rules import author_name, mention_text, split_text
+from bot.org import DEFAULT_ORG, Org
 from bot.workflow.chat import Attachment, Author
 
 
@@ -30,9 +31,11 @@ class DiscordChat:
         zero_user_id: int,
         webhook_for: Callable[[int], Awaitable[WebhookLike]],
         ops_channel: Callable[[], Awaitable[ChannelLike]],
+        org: Org = DEFAULT_ORG,
     ):
         """webhook_for(thread_id)는 그 게시글이 속한 포럼 채널의 웹훅을 돌려준다."""
         self._zero = zero_user_id
+        self._org = org
         self._webhook_for = webhook_for
         self._ops_channel = ops_channel
 
@@ -66,7 +69,7 @@ class DiscordChat:
             files = [_file(a) for a in attachments] if last else []
             message = await webhook.send(
                 chunk,
-                username=AUTHOR_NAMES[author],
+                username=author_name(self._org, author),
                 thread=discord.Object(thread_id),
                 allowed_mentions=self._mentions(mention and index == 0),
                 silent=not mention,

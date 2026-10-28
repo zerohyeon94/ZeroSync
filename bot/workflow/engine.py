@@ -22,12 +22,13 @@ from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel
 
-from bot.agents.base import AgentName, AgentRequest, AgentRunner, Mode, RunStatus, Stage
+from bot.agents.base import AgentName, AgentRequest, AgentRunner, EngineName, Mode, RunStatus, Stage
+from bot.org import DEFAULT_ORG, Org
 from bot.prompts import (
-    DISPLAY_NAMES,
     HistoryEntry,
     debate_prompt,
     opinion_prompt,
+    persona_for,
     with_format_error,
 )
 from bot.render import render_format_error, render_notice, render_opinion, render_opinion_post
@@ -37,7 +38,6 @@ from bot.store.repo import StaleStateError, TaskRecord
 from bot.workflow.chat import Attachment, Author, ChatIO
 from bot.workflow.mentions import Moment, should_mention
 from bot.workflow.state import (
-    BOTH_AGENTS,
     ApplyTypeLabel,
     CancelAgentRuns,
     CleanupStopped,
@@ -57,6 +57,7 @@ from bot.workflow.state import (
     PublishPr,
     RequestDebate,
     RequestOpinions,
+    Roster,
     RunTests,
     StageFailed,
     StartDesign,
@@ -145,10 +146,11 @@ class Engine(WorkStages):
         self,
         repo: Repository,
         chat: ChatIO,
-        runners: Mapping[AgentName, AgentRunner],
+        runners: Mapping[EngineName, AgentRunner],
         projects: Mapping[str, ProjectContext],
         *,
         timeout_sec: float,
+        org: Org = DEFAULT_ORG,
         git: Any = None,
         tests: Any = None,
         limits: Limits | None = None,
@@ -158,6 +160,8 @@ class Engine(WorkStages):
         self._repo = repo
         self._chat = chat
         self._runners = runners
+        self._org = org
+        self._roster = Roster(opinions=org.roles.opinions, callable=org.agent_names)
         self._projects = projects
         self._timeout = timeout_sec
         self._git = git
@@ -178,7 +182,7 @@ class Engine(WorkStages):
             raise ValueError(f"알 수 없는 프로젝트: {project}")
         if await self._repo.find_task_by_thread(thread) is not None:
             return None
-        result = start_task(PostCreated(title, text))
+        result = start_task(PostCreated(title, text), self._roster)
         task = await self._repo.create_task(
             project=project,
             discord_thread=thread,
@@ -214,7 +218,7 @@ class Engine(WorkStages):
         """현재 상태로 전이를 계산해 저장하고 효과를 실행한다."""
         task = await self._repo.get_task(task_id)
         try:
-            result = transition(task, event, self._limits)
+            result = transition(task, event, self._limits, self._roster)
         except NotImplementedError:
             await self._repo.add_event(task.id, record)
             await self._notice(task, NoticeCode.NOT_IMPLEMENTED, f"현재 상태: {task.state}")
@@ -252,7 +256,7 @@ class Engine(WorkStages):
             if task.state is TaskState.OPINIONS:
                 if not agents:
                     continue
-                names = ", ".join(DISPLAY_NAMES[agent] for agent in sorted(set(agents)))
+                names = ", ".join(self._org.display(agent) for agent in sorted(set(agents)))
                 await self._repo.add_event(
                     task.id,
                     NewEvent(Actor.BOT, EventKind.ERROR, {"reason": "restart", "agents": agents}),
@@ -384,7 +388,7 @@ class Engine(WorkStages):
 
     async def _cancel_runs(self, task_id: int) -> None:
         for run in await self._repo.list_running_agent_runs(task_id):
-            await self._runners[run.agent].cancel(run.id)
+            await self._runner(run.agent).cancel(run.id)
         test_run = self._running.tests.get(task_id)
         if test_run is not None and self._tests is not None:
             await self._tests.cancel(test_run)
@@ -403,6 +407,12 @@ class Engine(WorkStages):
         )
 
     # 에이전트 호출
+
+    def _runner(self, agent: AgentName) -> AgentRunner:
+        return self._runners[self._org.engine(agent)]
+
+    def _name(self, agent: str) -> str:
+        return self._org.display(agent)
 
     async def _ask(
         self,
@@ -446,7 +456,9 @@ class Engine(WorkStages):
         verify: Verify | None,
     ) -> _Answer[M]:
         run_id = f"t{task.id}-{agent}-{stage.value}-{uuid.uuid4().hex[:8]}"
-        await self._repo.start_agent_run(run_id, task_id=task.id, agent=agent, stage=stage)
+        await self._repo.start_agent_run(
+            run_id, task_id=task.id, agent=agent, stage=stage, engine=self._org.engine(agent)
+        )
         request = AgentRequest(
             run_id=run_id,
             task_id=task.id,
@@ -455,11 +467,12 @@ class Engine(WorkStages):
             cwd=cwd or self._projects[task.project].repo,
             mode=mode,
             timeout_sec=self._timeout,
-            resume_session=resume if agent == "claude" else None,
+            resume_session=resume if self._org.engine(agent) == "claude" else None,
             output_schema=model.model_json_schema(),
+            model=self._org.model(agent, stage),
         )
         try:
-            result = await self._runners[agent].run(request)
+            result = await self._runner(agent).run(request)
         except BaseException:
             await self._repo.finish_agent_run(
                 run_id, status=RunStatus.ERROR, exit_code=None, log_path=None
@@ -495,7 +508,11 @@ class Engine(WorkStages):
         history = await self._history(task) if effect.with_history else []
         prompts = {
             agent: opinion_prompt(
-                agent, title=task.title, post=post, question=effect.question, history=history
+                persona_for(self._org, agent),
+                title=task.title,
+                post=post,
+                question=effect.question,
+                history=history,
             )
             for agent in effect.agents
         }
@@ -507,28 +524,30 @@ class Engine(WorkStages):
 
     async def _debate(self, task: TaskRecord) -> None:
         latest = await self._latest_opinions(task.id)
-        missing = [agent for agent in BOTH_AGENTS if agent not in latest]
-        if missing:
-            names = ", ".join(DISPLAY_NAMES[agent] for agent in missing)
+        pair = self._org.roles.opinions[:2]
+        missing = [agent for agent in pair if agent not in latest]
+        if len(pair) < 2 or missing:
+            names = ", ".join(self._name(agent) for agent in missing)
             detail = f"/debate는 두 의견이 모두 있어야 한다. 의견이 없는 쪽: {names}"
             await self._notice(task, NoticeCode.REJECTED, detail)
             return
         post = await self._post_text(task)
         history = await self._history(task)
+        first, second = pair
         prompts = {
             agent: debate_prompt(
-                agent,
+                persona_for(self._org, agent),
                 title=task.title,
                 post=post,
                 own=render_opinion(latest[agent]),
-                other_agent=other,
+                other_name=self._name(other),
                 other=render_opinion(latest[other]),
                 history=history,
             )
-            for agent, other in (("claude", "codex"), ("codex", "claude"))
+            for agent, other in ((first, second), (second, first))
         }
         answers = await asyncio.gather(
-            *(self._ask(task, agent, Stage.DEBATE, prompts[agent]) for agent in BOTH_AGENTS)
+            *(self._ask(task, agent, Stage.DEBATE, prompts[agent]) for agent in pair)
         )
         await self._publish(task, answers, EventKind.DEBATE, {}, heading="반박")
 
@@ -541,12 +560,13 @@ class Engine(WorkStages):
         *,
         heading: str,
     ) -> None:
-        """응답을 Beta, Alpha 순서로 게시하고 기록한다. 마지막 게시에서 Zero를 멘션한다."""
+        """응답을 의견 담당 순서(roles.opinions)로 게시하고 기록한다. 마지막 게시에서 멘션한다."""
         current = await self._repo.get_task(task.id)
         if current.state is not TaskState.OPINIONS:
             return  # 실행 중 /stop 등으로 단계가 바뀌었다. 결과를 게시하지 않는다
 
-        ordered = sorted(answers, key=lambda answer: BOTH_AGENTS.index(answer.agent))
+        order = list(self._org.roles.opinions) + list(self._org.agent_names)
+        ordered = sorted(answers, key=lambda answer: order.index(answer.agent))
         outgoing = [self._outgoing(task, answer, kind, payload, heading) for answer in ordered]
         mention = should_mention(Moment.OPINIONS_READY)
         for index, item in enumerate(outgoing):
@@ -574,7 +594,7 @@ class Engine(WorkStages):
         payload: Mapping[str, object],
         heading: str,
     ) -> _Outgoing:
-        actor = Actor(answer.agent)
+        actor = answer.agent
         if answer.result is not None:
             rendered = render_opinion_post(answer.result, heading=heading)
             data = {**payload, "opinion": answer.result.model_dump(mode="json")}
@@ -587,7 +607,7 @@ class Engine(WorkStages):
             event = NewEvent(actor, EventKind.ERROR, data)
             return _Outgoing(answer.agent, rendered.text, rendered.attachments, event)
         # CLI 실행 실패: [ZeroSync] 안내 + 운영 채널 알림 (운영 규약 2.5)
-        name = DISPLAY_NAMES[answer.agent]
+        name = self._name(answer.agent)
         data = {**payload, "agent": answer.agent, "status": str(answer.status)}
         alert = (
             f"[{task.project}] 작업 {task.id} {name} {kind.value} 실행 실패: "
@@ -622,17 +642,17 @@ class Engine(WorkStages):
                 opinion = Opinion.model_validate(payload["opinion"])
                 heading = "반박" if event.kind is EventKind.DEBATE else ""
                 entries.append(
-                    HistoryEntry(event.actor.value, render_opinion(opinion, heading=heading))
+                    HistoryEntry(self._name(event.actor), render_opinion(opinion, heading=heading))
                 )
             elif event.kind is EventKind.DECISION:
-                entries.append(HistoryEntry("zero", f"/decide {payload.get('text', '')}"))
+                entries.append(HistoryEntry("Zero", f"/decide {payload.get('text', '')}"))
             else:
-                entries.append(HistoryEntry(event.actor.value, str(payload.get("text", ""))))
+                entries.append(HistoryEntry(self._name(event.actor), str(payload.get("text", ""))))
         return entries
 
     async def _latest_opinions(self, task_id: int) -> dict[AgentName, Opinion]:
         latest: dict[AgentName, Opinion] = {}
         for event in await self._repo.list_events(task_id, {EventKind.OPINION, EventKind.DEBATE}):
-            if event.actor in (Actor.CLAUDE, Actor.CODEX):
-                latest[event.actor.value] = Opinion.model_validate(event.payload["opinion"])
+            if self._org.has(event.actor):
+                latest[event.actor] = Opinion.model_validate(event.payload["opinion"])
         return latest

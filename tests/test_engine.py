@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from orgs import LEGACY_ORG
 
 from bot.agents import AgentRequest, AgentResult, FakeAgentRunner, RunStatus, Stage
 from bot.clock import FixedClock
@@ -160,6 +161,7 @@ class Harness:
                 )
             },
             timeout_sec=60,
+            org=LEGACY_ORG,
             git=self.git,
             tests=self.tests,
             worktrees_dir=tmp / "worktrees",
@@ -233,15 +235,15 @@ def test_post_creates_task_and_posts_both_opinions():
 
         authors = [(p.author, p.mention) for p in h.chat.posts]
         # Beta, Alpha 순서. 둘 다 도착한 마지막 게시에서만 멘션
-        assert authors == [("claude", False), ("codex", True)]
+        assert authors == [("beta", False), ("alpha", True)]
         assert "**찬성** — Beta 의견" in h.chat.posts[0].text
         assert "**반대** — Alpha 의견" in h.chat.posts[1].text
 
         opinions = await h.events(EventKind.OPINION)
-        assert [e.actor.value for e in opinions] == ["claude", "codex"]
+        assert [e.actor for e in opinions] == ["beta", "alpha"]
         assert [e.discord_message for e in opinions] == ["msg-1", "msg-2"]
         assert opinions[0].payload["first"] is True
-        assert await h.runs() == [("claude", "opinion", "ok"), ("codex", "opinion", "ok")]
+        assert await h.runs() == [("alpha", "opinion", "ok"), ("beta", "opinion", "ok")]
 
     assert result is None
 
@@ -267,7 +269,7 @@ def test_follow_up_question_sends_history_to_both():
         await h.post()
         await h.engine.on_message(THREAD, "배너 대신 푸시 알림은?", message_id="m-zero")
 
-        for runner, other in ((h.claude, "Alpha · Codex"), (h.codex, "Beta · Claude")):
+        for runner, other in ((h.claude, "Alpha · 개발팀장"), (h.codex, "Beta · 기획팀장")):
             prompt = runner.requests[1].prompt
             assert "지금까지의 흐름" in prompt
             assert other in prompt  # 두 번째 질문부터 상대 의견도 함께 전달
@@ -284,11 +286,11 @@ def test_targeted_question_calls_only_that_agent():
     @scenario(claude=[opinion("a1")], codex=[opinion("b1"), opinion("b2")])
     async def _(h):
         await h.post()
-        await h.engine.on_message(THREAD, "@codex 더 작게 만들 수 있나?")
+        await h.engine.on_message(THREAD, "@alpha 더 작게 만들 수 있나?")
         assert len(h.claude.requests) == 1
         assert len(h.codex.requests) == 2
         assert "Zero의 질문:\n더 작게 만들 수 있나?" in h.codex.requests[1].prompt
-        assert [(p.author, p.mention) for p in h.chat.posts[-1:]] == [("codex", True)]
+        assert [(p.author, p.mention) for p in h.chat.posts[-1:]] == [("alpha", True)]
 
 
 def test_notice_after_more_than_five_questions():
@@ -298,7 +300,7 @@ def test_notice_after_more_than_five_questions():
     async def _(h):
         await h.post()
         for i in range(6):
-            await h.engine.on_message(THREAD, f"@claude 질문 {i}")
+            await h.engine.on_message(THREAD, f"@beta 질문 {i}")
         notices = [p for p in h.chat.posts if p.author == "bot"]
         assert len(notices) == 1
         assert "/decide 대기 중" in notices[0].text
@@ -317,9 +319,9 @@ def test_format_error_is_retried_once_with_error():
         assert "```json 코드 블록을 찾지 못했다" in retry
         assert "고친 의견" in h.chat.posts[0].text
         assert await h.runs() == [
-            ("claude", "opinion", "invalid_output"),
-            ("claude", "opinion", "ok"),
-            ("codex", "opinion", "ok"),
+            ("alpha", "opinion", "ok"),
+            ("beta", "opinion", "invalid_output"),
+            ("beta", "opinion", "ok"),
         ]
 
 
@@ -328,7 +330,7 @@ def test_repeated_format_error_posts_raw_and_keeps_opinions():
     async def _(h):
         await h.post()
         beta, alpha = h.chat.posts
-        assert beta.author == "claude"
+        assert beta.author == "beta"
         assert "**형식 오류**" in beta.text
         assert "엉망 2" in beta.text
         assert (beta.mention, alpha.mention) == (False, True)
@@ -346,15 +348,15 @@ def test_cli_failure_posts_notice_and_alerts_ops():
         await h.post()
         beta, notice = h.chat.posts
         # 실패 안내도 Alpha 자리에 게시하고, 마지막 게시에서 멘션한다
-        assert beta.author == "claude" and beta.mention is False
+        assert beta.author == "beta" and beta.mention is False
         assert notice.author == "bot" and notice.mention is True
-        assert "Alpha · Codex" in notice.text and "timeout" in notice.text
+        assert "Alpha · 개발팀장" in notice.text and "timeout" in notice.text
         ((text, mention),) = h.chat.ops
         assert mention is True
         assert "timeout" in text and "runs/x.log" in text
         # 실행 실패는 재요청하지 않는다
         assert len(h.codex.requests) == 1
-        assert ("codex", "opinion", "timeout") in await h.runs()
+        assert ("alpha", "opinion", "timeout") in await h.runs()
 
 
 def test_both_failed_mentions_on_last_notice():
@@ -378,7 +380,7 @@ def test_debate_sends_opponent_opinion():
         await h.engine.on_command(THREAD, CommandName.DEBATE)
         claude_req = h.claude.requests[1]
         assert claude_req.stage is Stage.DEBATE
-        assert "## Alpha · Codex의 직전 의견" in claude_req.prompt
+        assert "## Alpha · 개발팀장의 직전 의견" in claude_req.prompt
         assert "Alpha 첫 의견" in claude_req.prompt
         assert "## 너의 직전 의견" in claude_req.prompt
         assert "Beta 첫 의견" in claude_req.prompt
@@ -388,7 +390,7 @@ def test_debate_sends_opponent_opinion():
         assert beta.text.startswith("반박 · **찬성** — Beta 반박")
         assert alpha.mention is True
         debates = await h.events(EventKind.DEBATE)
-        assert [e.actor.value for e in debates] == ["claude", "codex"]
+        assert [e.actor for e in debates] == ["beta", "alpha"]
         # 질문 수에 세지 않는다
         assert (await h.task()).opinion_rounds == 0
 
@@ -398,7 +400,7 @@ def test_debate_needs_both_opinions():
     async def _(h):
         await h.post()
         await h.engine.on_command(THREAD, CommandName.DEBATE)
-        assert "의견이 없는 쪽: Alpha · Codex" in h.chat.posts[-1].text
+        assert "의견이 없는 쪽: Alpha · 개발팀장" in h.chat.posts[-1].text
         assert len(h.claude.requests) == 1
 
 
@@ -490,7 +492,7 @@ def test_stop_cancels_running_agents_and_drops_results():
             assert [p.author for p in h.chat.posts] == ["bot"]
             assert "작업을 중지했다" in h.chat.posts[0].text
             assert h.chat.ops == []
-            assert ("claude", "opinion", "cancelled") in await h.runs()
+            assert ("beta", "opinion", "cancelled") in await h.runs()
             assert await h.events(EventKind.OPINION) == []
 
             await h.engine.on_message(THREAD, "다시")
@@ -593,7 +595,7 @@ def test_full_cycle_from_decide_to_merge():
         ]
         assert ("push", worktree, "feat/42-budget-banner") in h.git.calls
         design_post = next(p for p in h.chat.posts if p.text.startswith("**설계**"))
-        assert design_post.author == "claude" and design_post.mention is True
+        assert design_post.author == "beta" and design_post.mention is True
         assert (
             "https://github.com/zerohyeon94/GagaeSsi/blob/feat/42-budget-banner/"
             "docs/설계/42-budget-banner.md" in design_post.text

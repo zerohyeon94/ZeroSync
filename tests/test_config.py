@@ -36,7 +36,11 @@ PROJECT = (
 
 
 def yaml_text(project=PROJECT, extra=""):
-    return f"projects:\n  gagaessi:\n{project}paths:\n  vault_projects: /vault/Projects\n{extra}"
+    # company는 이 맥의 실제 회사 설정을 읽지 않게 없는 경로로 둔다
+    return (
+        f"projects:\n  gagaessi:\n{project}paths:\n  vault_projects: /vault/Projects\n"
+        f"  company: /nonexistent/zerosync-company\n{extra}"
+    )
 
 
 def write(tmp_path, text, name="projects.yaml"):
@@ -274,3 +278,38 @@ def test_cli_models_by_stage(tmp_path):
 def test_rejects_bad_cli_models(tmp_path, extra, match):
     with pytest.raises(ConfigError, match=match):
         load(tmp_path, yaml_text(extra=extra))
+
+
+# 회사 설정 (SPEC 9.1-1)
+
+
+def test_org_defaults_when_company_dir_has_no_org(tmp_path):
+    config = load(tmp_path)
+    assert config.paths.company.as_posix() == "/nonexistent/zerosync-company"
+    assert config.org.roles.review == "delta"
+
+
+def test_org_is_loaded_from_company_dir(tmp_path):
+    company = tmp_path / "company"
+    company.mkdir()
+    (company / "org.yaml").write_text(
+        "teams:\n  dev: {name: 개발, lead: alpha}\n  qa: {name: QA, lead: delta}\n"
+        "agents:\n"
+        "  alpha: {display: Alpha, team: dev, perspective: p, basic_question: q}\n"
+        "  delta: {display: Delta, team: qa, perspective: p, basic_question: q}\n"
+        "roles: {opinions: [alpha], design: alpha, implement: alpha, review: delta,"
+        " doc_sync: alpha}\n",
+        encoding="utf-8",
+    )
+    text = yaml_text().replace("/nonexistent/zerosync-company", str(company))
+    config = load(tmp_path, text)
+    assert config.org.agent_names == ("alpha", "delta")
+
+
+def test_broken_org_is_a_config_error(tmp_path):
+    company = tmp_path / "company"
+    company.mkdir()
+    (company / "org.yaml").write_text("teams: {}\nagents: {}\nroles: {review: x}\n")
+    text = yaml_text().replace("/nonexistent/zerosync-company", str(company))
+    with pytest.raises(ConfigError, match="org.yaml"):
+        load(tmp_path, text)

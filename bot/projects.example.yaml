@@ -21,6 +21,8 @@ paths:
   worktrees: ~/.zerosync/worktrees
   runs: ~/.zerosync/runs
   db: ~/.zerosync/zerosync.db
+  # 비공개 회사 설정(org.yaml, agents/). 없으면 기본 조직(ADR-007)을 쓴다. 예시는 examples/company
+  company: ~/.zerosync/company
 
 # 생략하면 기본값을 쓴다
 cli:

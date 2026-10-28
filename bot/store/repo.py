@@ -14,16 +14,24 @@ from typing import Any
 
 import aiosqlite
 
-from bot.agents.base import AgentName, RunStatus, Stage
+from bot.agents.base import AgentName, EngineName, RunStatus, Stage
 from bot.clock import Clock, to_iso
 from bot.workflow.state import TaskState
 
 
 class Actor(StrEnum):
+    """사람과 봇. 에이전트는 회사 설정의 이름(beta, alpha …)을 문자열로 그대로 쓴다.
+
+    CLAUDE·CODEX는 ADR-005 기준 기록(엔진 이름이 곧 에이전트 이름)을 읽기 위해 남긴다.
+    """
+
     ZERO = "zero"
     CLAUDE = "claude"
     CODEX = "codex"
     BOT = "bot"
+
+
+ActorName = Actor | str
 
 
 class EventKind(StrEnum):
@@ -73,7 +81,7 @@ class NotFoundError(LookupError):
 
 @dataclass(frozen=True)
 class NewEvent:
-    actor: Actor
+    actor: ActorName
     kind: EventKind
     payload: Any  # JSON으로 저장할 수 있는 값 (검증된 스키마 원본은 model_dump(mode="json"))
     discord_message: str | None = None
@@ -108,7 +116,7 @@ class TaskRecord:
 class EventRecord:
     id: int
     task_id: int
-    actor: Actor
+    actor: ActorName
     kind: EventKind
     payload: Any
     discord_message: str | None
@@ -126,6 +134,7 @@ class AgentRunRecord:
     log_path: str | None
     started_at: str
     finished_at: str | None
+    engine: str | None = None  # 실행한 엔진 (v3부터 기록)
 
 
 RUNNING = "running"
@@ -276,7 +285,7 @@ class Repository:
             "VALUES (?, ?, ?, ?, ?, ?)",
             (
                 task_id,
-                event.actor.value,
+                str(event.actor),
                 event.kind.value,
                 json.dumps(event.payload, ensure_ascii=False),
                 event.discord_message,
@@ -289,13 +298,19 @@ class Repository:
     # agent_runs
 
     async def start_agent_run(
-        self, run_id: str, *, task_id: int, agent: AgentName, stage: Stage
+        self,
+        run_id: str,
+        *,
+        task_id: int,
+        agent: AgentName,
+        stage: Stage,
+        engine: EngineName | None = None,
     ) -> AgentRunRecord:
         async with self._transaction():
             await self._conn.execute(
-                "INSERT INTO agent_runs (id, task_id, agent, stage, status, started_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (run_id, task_id, agent, stage.value, RUNNING, self._now()),
+                "INSERT INTO agent_runs (id, task_id, agent, stage, status, started_at, engine) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (run_id, task_id, agent, stage.value, RUNNING, self._now(), engine),
             )
         return await self.get_agent_run(run_id)
 
@@ -363,11 +378,18 @@ def _task(row: aiosqlite.Row) -> TaskRecord:
     return TaskRecord(**data)
 
 
+def _actor(value: str) -> ActorName:
+    try:
+        return Actor(value)
+    except ValueError:
+        return value  # 에이전트 이름
+
+
 def _event(row: aiosqlite.Row) -> EventRecord:
     return EventRecord(
         id=row["id"],
         task_id=row["task_id"],
-        actor=Actor(row["actor"]),
+        actor=_actor(row["actor"]),
         kind=EventKind(row["kind"]),
         payload=json.loads(row["payload"]),
         discord_message=row["discord_message"],

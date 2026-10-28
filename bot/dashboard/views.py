@@ -10,7 +10,7 @@ from typing import Any
 from urllib.parse import quote, urlencode
 
 from bot.dashboard.queries import EventRow, ProjectSummary, RunRow, StageStat, TaskRow
-from bot.prompts import DISPLAY_NAMES
+from bot.org import DEFAULT_ORG
 from bot.render import render_opinion
 from bot.schemas import Opinion
 
@@ -113,7 +113,8 @@ def _counts(counts: Mapping[str, int], labels: Mapping[str, str] | None = None) 
 
 
 def _name(agent: str) -> str:
-    return _e(DISPLAY_NAMES.get(agent, agent))
+    # 대시보드는 DB만 읽으므로 표시 이름은 기본 조직(ADR-007) 기준이다
+    return _e(DEFAULT_ORG.display(agent))
 
 
 def _speaker(actor: str) -> str:

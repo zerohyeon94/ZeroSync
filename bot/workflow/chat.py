@@ -1,15 +1,16 @@
 """채팅 출력 인터페이스 (SPEC 6.1).
 
 워크플로는 이 인터페이스만 알고, Discord 구현은 `bot/discord_io/`가 맡는다.
-게시 이름(`[Beta · Claude]` 등), 멘션 문자열, 1,900자 분할 같은 표시 세부는 구현 쪽 책임이다.
+게시 이름(`[Beta · 기획팀장]` 등), 멘션 문자열, 1,900자 분할 같은 표시 세부는 구현 쪽 책임이다.
 """
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from typing import Protocol
 
-# 게시 주체: 에이전트는 웹훅 이름으로, 봇은 [ZeroSync]로 게시한다 (운영 규약 1.2)
-Author = Literal["claude", "codex", "bot"]
+# 게시 주체: 에이전트 이름(beta, alpha …) 또는 "bot". 에이전트는 웹훅 이름 `[이름 · 직책]`으로,
+# 봇은 [ZeroSync]로 게시한다 (운영 규약 1.2, SPEC Q16)
+Author = str
 
 
 @dataclass(frozen=True)

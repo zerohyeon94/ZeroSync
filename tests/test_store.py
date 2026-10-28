@@ -81,7 +81,7 @@ def test_connect_creates_schema_and_file(tmp_path):
 
     version, tables, fk = run(scenario())
     assert path.exists()
-    assert version == SCHEMA_VERSION == 2
+    assert version == SCHEMA_VERSION == 3
     assert {"tasks", "events", "agent_runs"} <= tables
     assert fk == 1
 
@@ -336,5 +336,36 @@ def test_v1_database_is_upgraded_with_defaults(tmp_path):
             await conn.close()
 
     version, task = run(scenario())
-    assert version == 2
+    assert version == 3
     assert (task.review_limit_bonus, task.test_limit_bonus, task.recommended_fixed) == (0, 0, 0)
+
+
+def test_v2_runs_get_engine_from_legacy_agent_name(tmp_path):
+    """ADR-005 기준 실행 기록(agent=claude/codex)은 v3에서 엔진 열을 그 이름으로 채운다."""
+    import sqlite3
+
+    from bot.store.db import MIGRATIONS
+
+    path = tmp_path / "v2.db"
+    raw = sqlite3.connect(path)
+    raw.executescript(MIGRATIONS[0] + MIGRATIONS[1] + "\nPRAGMA user_version = 2;")
+    raw.execute(
+        "INSERT INTO tasks (project, discord_thread, title, state, created_at, updated_at) "
+        "VALUES ('gagaessi', 't', '제목', 'DONE', 'x', 'x')"
+    )
+    raw.execute(
+        "INSERT INTO agent_runs (id, task_id, agent, stage, status, started_at) "
+        "VALUES ('r1', 1, 'codex', 'review', 'ok', 'x')"
+    )
+    raw.commit()
+    raw.close()
+
+    async def scenario():
+        conn, repo = await open_repo(path)
+        try:
+            return await repo.get_agent_run("r1")
+        finally:
+            await conn.close()
+
+    record = run(scenario())
+    assert (record.agent, record.engine) == ("codex", "codex")

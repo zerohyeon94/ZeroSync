@@ -4,14 +4,14 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from enum import StrEnum
 
+from bot.org import Org
 from bot.workflow.chat import Author
 
-# 운영 규약 1.2의 표시 이름
-AUTHOR_NAMES: dict[Author, str] = {
-    "claude": "[Beta · Claude]",
-    "codex": "[Alpha · Codex]",
-    "bot": "[ZeroSync]",
-}
+
+def author_name(org: Org, author: Author) -> str:
+    """웹훅 게시 이름 `[이름 · 직책]` (운영 규약 1.2, SPEC Q16). 봇은 [ZeroSync]."""
+    return f"[{org.display(author)}]"
+
 
 WEBHOOK_NAME = "ZeroSync"
 # Discord 메시지 최대 2,000자. 분할은 안전장치이고,

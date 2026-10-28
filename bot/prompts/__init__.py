@@ -14,7 +14,7 @@ from string import Template
 
 from pydantic import BaseModel
 
-from bot.agents.base import AgentName
+from bot.org import Org
 from bot.schemas import DesignSummary, ImplementationReport, Opinion, Review
 
 PROMPTS_DIR = Path(__file__).resolve().parent
@@ -22,35 +22,23 @@ PROMPTS_DIR = Path(__file__).resolve().parent
 
 @dataclass(frozen=True)
 class Persona:
-    name: str
+    """프롬프트에 넣는 인격. 회사 설정(org.yaml, agents/<이름>.md)에서 만든다 (SPEC 5.3)."""
+
+    name: str  # 예: Beta · 기획팀장 (INFJ)
     perspective: str
     basic_question: str
+    profile: str = ""  # 인격 파일 전문 (역량, 위험과 보완)
 
 
-PERSONAS: dict[AgentName, Persona] = {
-    "claude": Persona(
-        "Beta · Claude (ISFJ)",
-        "설계, 장기 유지보수, 기존 코드와의 일관성, 사용자 경험",
-        "어떻게 하면 제대로 만들 수 있나",
-    ),
-    "codex": Persona(
-        "Alpha · Codex (INTJ)",
-        "구현 난이도, 성능, 엣지 케이스, 반례, 더 단순한 대안",
-        "왜 실패할 수 있나, 더 작게 할 수 있나",
-    ),
-}
-
-DISPLAY_NAMES: dict[str, str] = {
-    "zero": "Zero",
-    "claude": "Beta · Claude",
-    "codex": "Alpha · Codex",
-    "bot": "ZeroSync",
-}
+def persona_for(org: Org, agent: str) -> Persona:
+    spec = org.agents[agent]
+    name = org.display(agent) + (f" ({spec.mbti})" if spec.mbti else "")
+    return Persona(name, spec.perspective, spec.basic_question, org.profile(agent))
 
 
 @dataclass(frozen=True)
 class HistoryEntry:
-    """게시글 흐름의 한 줄. speaker는 zero, claude, codex, bot 중 하나."""
+    """게시글 흐름의 한 줄. speaker는 표시 이름(예: Zero, Beta · 기획팀장)이다."""
 
     speaker: str
     text: str
@@ -70,18 +58,24 @@ def _history(entries: Sequence[HistoryEntry]) -> str:
         return ""
     lines = ["", "## 지금까지의 흐름", ""]
     for entry in entries:
-        lines.append(f"[{DISPLAY_NAMES.get(entry.speaker, entry.speaker)}]")
+        lines.append(f"[{entry.speaker}]")
         lines.append(entry.text.strip())
         lines.append("")
     return "\n".join(lines)
 
 
-def _common(agent: AgentName, title: str, post: str) -> dict[str, str]:
-    persona = PERSONAS[agent]
+def _profile(persona: Persona) -> str:
+    if not persona.profile.strip():
+        return ""
+    return f"\n## 인격과 역량\n\n{persona.profile.strip()}\n\n"
+
+
+def _common(persona: Persona, title: str, post: str) -> dict[str, str]:
     return {
         "persona": persona.name,
         "perspective": persona.perspective,
         "basic_question": persona.basic_question,
+        "profile": _profile(persona),
         "title": title.strip(),
         "post": post.strip(),
         "schema": _schema(),
@@ -89,7 +83,7 @@ def _common(agent: AgentName, title: str, post: str) -> dict[str, str]:
 
 
 def opinion_prompt(
-    agent: AgentName,
+    persona: Persona,
     *,
     title: str,
     post: str,
@@ -110,27 +104,27 @@ def opinion_prompt(
             "다른 에이전트의 의견은 아직 없으며 참고하지 않는다."
         )
     return _template("opinion").substitute(
-        _common(agent, title, post), history=_history(history), request=request
+        _common(persona, title, post), history=_history(history), request=request
     )
 
 
 def debate_prompt(
-    agent: AgentName,
+    persona: Persona,
     *,
     title: str,
     post: str,
     own: str,
-    other_agent: AgentName,
+    other_name: str,
     other: str,
     history: Sequence[HistoryEntry] = (),
 ) -> str:
     """반박 프롬프트. own·other는 렌더링된 직전 의견 전문이다."""
     return _template("debate").substitute(
-        _common(agent, title, post),
+        _common(persona, title, post),
         history=_history(history),
         own=own.strip(),
         other=other.strip(),
-        other_name=DISPLAY_NAMES[other_agent],
+        other_name=other_name,
     )
 
 
@@ -147,9 +141,12 @@ def with_format_error(prompt: str, error: str) -> str:
 # Phase 2: 설계, 구현, 수정, 리뷰
 
 
-def _persona(agent: AgentName) -> dict[str, str]:
-    persona = PERSONAS[agent]
-    return {"persona": persona.name, "perspective": persona.perspective}
+def _persona(persona: Persona) -> dict[str, str]:
+    return {
+        "persona": persona.name,
+        "perspective": persona.perspective,
+        "profile": _profile(persona),
+    }
 
 
 def _section(title: str, body: str) -> str:
@@ -174,6 +171,7 @@ def design_text(summary: DesignSummary) -> str:
 
 
 def design_prompt(
+    persona: Persona,
     *,
     title: str,
     post: str,
@@ -199,7 +197,7 @@ def design_prompt(
             )
         revision_text = _section("수정 요청", body)
     return _template("design").substitute(
-        _persona("claude"),
+        _persona(persona),
         title=title.strip(),
         issue=issue,
         post=post.strip(),
@@ -212,10 +210,10 @@ def design_prompt(
 
 
 def implement_prompt(
-    *, title: str, decision: str, issue: int, branch: str, summary: DesignSummary
+    persona: Persona, *, title: str, decision: str, issue: int, branch: str, summary: DesignSummary
 ) -> str:
     return _template("implement").substitute(
-        _persona("claude"),
+        _persona(persona),
         title=title.strip(),
         issue=issue,
         branch=branch,
@@ -227,10 +225,10 @@ def implement_prompt(
 
 
 def fix_prompt(
-    *, title: str, issue: int, branch: str, summary: DesignSummary, problems: str
+    persona: Persona, *, title: str, issue: int, branch: str, summary: DesignSummary, problems: str
 ) -> str:
     return _template("fix").substitute(
-        _persona("claude"),
+        _persona(persona),
         title=title.strip(),
         issue=issue,
         branch=branch,
@@ -241,7 +239,9 @@ def fix_prompt(
 
 
 def review_prompt(
+    persona: Persona,
     *,
+    author: str,
     title: str,
     decision: str,
     issue: int,
@@ -258,7 +258,8 @@ def review_prompt(
             previous_required + "\n\n각 항목이 해결됐는지 확인한다. 등급을 낮춰 넘기지 않는다",
         )
     return _template("review").substitute(
-        _persona("codex"),
+        _persona(persona),
+        author=author,
         title=title.strip(),
         issue=issue,
         round=round_,

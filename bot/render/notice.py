@@ -10,7 +10,7 @@ _TEXT = {
     NoticeCode.STOPPED: "작업을 중지했다. 실행 중인 에이전트를 종료했다.",
     NoticeCode.REJECTED: "지금 처리할 수 없는 입력이다.",
     NoticeCode.DECISION_RECORDED: (
-        "결정을 기록하고 GitHub Issue를 만들었다. Beta가 설계를 시작한다. "
+        "결정을 기록하고 GitHub Issue를 만들었다. 설계 담당이 설계를 시작한다. "
         "(볼트 결정 노트는 Phase 3에서 쓴다)"
     ),
     NoticeCode.AGENT_FAILED: "응답을 받지 못했다. 같은 질문을 다시 보내면 다시 요청한다.",

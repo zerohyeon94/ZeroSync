@@ -17,10 +17,10 @@ from typing import TYPE_CHECKING, Any
 from bot.agents.base import Stage
 from bot.github.rules import commit_message_problems
 from bot.prompts import (
-    DISPLAY_NAMES,
     design_prompt,
     fix_prompt,
     implement_prompt,
+    persona_for,
     review_prompt,
 )
 from bot.render import render_format_error, render_notice
@@ -80,6 +80,8 @@ class WorkStages:
     _projects: Any
     _running: Any
     _thread_url: Any
+    _org: Any
+    _name: Any
 
     # 공통
 
@@ -145,7 +147,7 @@ class WorkStages:
 
     async def _failed(self, task: TaskRecord, stage: str, answer: _Answer[Any]) -> Outcome:
         """에이전트 단계 실패. 원문이나 실패 안내를 게시하고 NEEDS_HUMAN으로 보낸다 (SPEC 3.3)."""
-        name = DISPLAY_NAMES[answer.agent]
+        name = self._name(answer.agent)
         if answer.failed_to_run:
             reason = f"{name} {stage} 실행 실패 ({answer.status})"
             await self._say(
@@ -173,7 +175,7 @@ class WorkStages:
             return None
         decision = await self._decision(task_id)
         latest = await self._latest_opinions(task_id)
-        opinions = [(DISPLAY_NAMES[agent], latest[agent]) for agent in latest]
+        opinions = [(self._name(agent), latest[agent]) for agent in latest]
         body = render_issue_body(
             decision=decision,
             post=await self._post_text(task),
@@ -219,10 +221,11 @@ class WorkStages:
                 problems.append(f"{summary.design_doc} 파일이 없다")
             return problems + await self._commit_problems(task, worktree, before)
 
-        await self._say(
-            task, "Beta가 설계를 시작한다." if not revision else "Beta가 설계를 고친다."
-        )
+        agent = self._org.roles.design
+        verb = "설계를 시작한다" if not revision else "설계를 고친다"
+        await self._say(task, f"{self._name(agent)}이 {verb}.")
         prompt = design_prompt(
+            persona_for(self._org, agent),
             title=task.title,
             post=await self._post_text(task),
             decision=await self._decision(task_id),
@@ -234,7 +237,7 @@ class WorkStages:
         )
         answer = await self._ask(
             task,
-            "claude",
+            agent,
             Stage.DESIGN,
             prompt,
             model=DesignSummary,
@@ -254,7 +257,7 @@ class WorkStages:
         await self._github(task).comment_issue(issue, render_design(summary, doc_url=doc_url))
         message_id = await self._chat.post(
             task.discord_thread,
-            "claude",
+            agent,
             render_design(summary, doc_url=doc_url)
             + "\n\n`/approve`로 승인하거나 `/revise <요청>`으로 고친다.",
             mention=should_mention(Moment.DESIGN_READY),
@@ -264,7 +267,7 @@ class WorkStages:
             "revision": revision,
             "branch": branch,
         }
-        return StageSucceeded(), NewEvent(Actor.CLAUDE, EventKind.DESIGN, payload, message_id)
+        return StageSucceeded(), NewEvent(agent, EventKind.DESIGN, payload, message_id)
 
     async def _push_design_branch(self, task: TaskRecord, worktree: Path, branch: str) -> str:
         """설계 커밋에 작업 브랜치를 만들어 push한다 (4.3).
@@ -295,14 +298,16 @@ class WorkStages:
     async def _implement(self, task_id: int) -> Outcome:
         task = await self._repo.get_task(task_id)
         summary = await self._summary(task_id)
+        agent = self._org.roles.implement
         prompt = implement_prompt(
+            persona_for(self._org, agent),
             title=task.title,
             decision=await self._decision(task_id),
             issue=task.issue_number,
             branch=task.branch,
             summary=summary,
         )
-        await self._say(task, "Beta가 구현을 시작한다.", Moment.IMPLEMENT_STARTED)
+        await self._say(task, f"{self._name(agent)}이 구현을 시작한다.", Moment.IMPLEMENT_STARTED)
         return await self._work(task, Stage.IMPLEMENT, prompt, EventKind.IMPL, {}, "구현")
 
     async def _fix(self, task_id: int, source: FixSource) -> Outcome:
@@ -315,6 +320,7 @@ class WorkStages:
                 source = FixSource.TESTS
         problems = await self._fix_problems(task_id, source)
         prompt = fix_prompt(
+            persona_for(self._org, self._org.roles.implement),
             title=task.title,
             issue=task.issue_number,
             branch=task.branch,
@@ -326,7 +332,8 @@ class WorkStages:
             FixSource.REVIEW: "리뷰 [필수] 지적",
             FixSource.RECOMMENDED: "[권장] 지적",
         }
-        await self._say(task, f"Beta가 고친다: {labels[source]}", Moment.IMPLEMENT_STARTED)
+        name = self._name(self._org.roles.implement)
+        await self._say(task, f"{name}이 고친다: {labels[source]}", Moment.IMPLEMENT_STARTED)
         payload = {"source": source.value}
         return await self._work(task, Stage.FIX, prompt, EventKind.FIX, payload, "수정")
 
@@ -344,7 +351,8 @@ class WorkStages:
                 review.recommended_findings
             )
         required = render_findings(review.required_findings)
-        text = f"Alpha의 [필수] 지적 (번호마다 대응한다):\n\n{required}"
+        reviewer = self._name(self._org.roles.review)
+        text = f"{reviewer}의 [필수] 지적 (번호마다 대응한다):\n\n{required}"
         if review.recommended_findings:
             text += (
                 "\n\n참고: [권장] 지적 (반영 여부는 판단에 맡긴다. 번호 대응 대상 아님)\n\n"
@@ -368,9 +376,10 @@ class WorkStages:
         async def verify(_report: ImplementationReport) -> list[str]:
             return await self._commit_problems(task, worktree, before)
 
+        agent = self._org.roles.implement
         answer = await self._ask(
             task,
-            "claude",
+            agent,
             stage,
             prompt,
             model=ImplementationReport,
@@ -388,7 +397,7 @@ class WorkStages:
         commits = await self._git.commits(worktree, base)
         message_id = await self._chat.post(
             task.discord_thread,
-            "claude",
+            agent,
             render_implementation(report, heading=label),
             mention=should_mention(Moment.IMPLEMENT_STARTED),
         )
@@ -397,7 +406,7 @@ class WorkStages:
             "report": report.model_dump(mode="json"),
             "commits": [commit.sha for commit in commits[before:]],
         }
-        return StageSucceeded(), NewEvent(Actor.CLAUDE, kind, data, message_id)
+        return StageSucceeded(), NewEvent(agent, kind, data, message_id)
 
     # 테스트 (운영 규약 1.7)
 
@@ -469,7 +478,10 @@ class WorkStages:
         previous = ""
         if reviews and reviews[-1].review.required_findings:
             previous = render_findings(reviews[-1].review.required_findings)
+        agent = self._org.roles.review
         prompt = review_prompt(
+            persona_for(self._org, agent),
+            author=self._name(self._org.roles.implement),
             title=task.title,
             decision=await self._decision(task_id),
             issue=task.issue_number,
@@ -479,9 +491,10 @@ class WorkStages:
             diff=diff,
             previous_required=previous,
         )
-        await self._say(task, f"Alpha가 리뷰 {round_}라운드를 시작한다.", Moment.REVIEW_RUNNING)
+        name = self._name(agent)
+        await self._say(task, f"{name}이 리뷰 {round_}라운드를 시작한다.", Moment.REVIEW_RUNNING)
         answer = await self._ask(
-            task, "codex", Stage.REVIEW, prompt, model=Review, cwd=self._worktree(task)
+            task, agent, Stage.REVIEW, prompt, model=Review, cwd=self._worktree(task)
         )
         if answer.result is None:
             return await self._failed(task, "리뷰", answer)
@@ -489,17 +502,15 @@ class WorkStages:
         text = render_review(review, round_=round_)
         message_id = await self._chat.post(
             task.discord_thread,
-            "codex",
+            agent,
             text,
             mention=should_mention(Moment.REVIEW_ROUND_RESULT),
         )
         if task.pr_number is not None:
-            await self._github(task).comment_pr(task.pr_number, f"### Alpha · Codex\n\n{text}")
+            await self._github(task).comment_pr(task.pr_number, f"### {name}\n\n{text}")
         payload = {"review": review.model_dump(mode="json"), "round": round_}
         approved = review.verdict.value == "APPROVED"
-        return ReviewFinished(approved), NewEvent(
-            Actor.CODEX, EventKind.REVIEW, payload, message_id
-        )
+        return ReviewFinished(approved), NewEvent(agent, EventKind.REVIEW, payload, message_id)
 
     async def _mark_ready(self, task: TaskRecord) -> None:
         github = self._github(task)
@@ -510,7 +521,8 @@ class WorkStages:
         hint = " merge 전에 `/fix`로 1회 반영할 수 있다." if remaining else ""
         await self._say(
             task,
-            f"Alpha가 APPROVED를 냈다. PR #{task.pr_number}을 확인하고 merge한다: "
+            f"{self._name(self._org.roles.review)}이 APPROVED를 냈다. "
+            f"PR #{task.pr_number}을 확인하고 merge한다: "
             f"{self._web(task, f'pull/{task.pr_number}')}\n남은 [권장] {remaining}개.{hint}",
             Moment.FINAL_APPROVAL,
         )

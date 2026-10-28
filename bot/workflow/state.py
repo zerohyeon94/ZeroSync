@@ -19,7 +19,19 @@ from bot.agents.base import AgentName
 # 질문 수가 이 값을 넘는 순간 "/decide 대기 중"을 1회 알린다 (운영 규약 1.6)
 OPINION_NOTICE_AFTER = 5
 
-BOTH_AGENTS: tuple[AgentName, ...] = ("claude", "codex")
+
+@dataclass(frozen=True)
+class Roster:
+    """의견을 낼 에이전트 (회사 설정 org.yaml의 roles, 에이전트 목록).
+
+    opinions: 아무도 부르지 않았을 때 답하는 팀장. callable: `@이름`으로 부를 수 있는 에이전트.
+    """
+
+    opinions: tuple[AgentName, ...] = ("beta", "alpha")
+    callable: tuple[AgentName, ...] = ("beta", "gamma", "alpha", "delta")
+
+
+DEFAULT_ROSTER = Roster()
 
 
 class TaskState(StrEnum):
@@ -102,7 +114,7 @@ class PostCreated:
 
 @dataclass(frozen=True)
 class ZeroMessage:
-    """게시글 안의 Zero 일반 메시지. `@claude`/`@codex`로 시작하면 지정된 쪽만 응답한다."""
+    """게시글 안의 Zero 일반 메시지. `@beta`처럼 `@이름`으로 시작하면 지정된 쪽만 응답한다."""
 
     text: str
 
@@ -162,7 +174,7 @@ class Limits:
 
 class FixSource(StrEnum):
     TESTS = "tests"  # 테스트 실패
-    REVIEW = "review"  # Alpha의 [필수] 지적
+    REVIEW = "review"  # 리뷰 담당의 [필수] 지적
     RECOMMENDED = "recommended"  # merge 전 /fix 권장 반영
     RESUME = "resume"  # NEEDS_HUMAN에서 재개: 직전 수정 맥락을 다시 쓴다
 
@@ -204,14 +216,14 @@ class WriteVaultDecision:
 
 @dataclass(frozen=True)
 class StartDesign:
-    """Beta에게 설계를 요청한다. revision이 있으면 Zero의 /revise 요청으로 같은 설계를 고친다."""
+    """설계 담당에게 설계를 요청한다. revision이 있으면 /revise 요청으로 같은 설계를 고친다."""
 
     revision: str = ""
 
 
 @dataclass(frozen=True)
 class StartImplement:
-    """승인된 설계로 Beta에게 구현을 요청한다."""
+    """승인된 설계로 구현 담당에게 구현을 요청한다."""
 
 
 @dataclass(frozen=True)
@@ -226,7 +238,7 @@ class PublishPr:
 
 @dataclass(frozen=True)
 class StartReview:
-    """Alpha에게 리뷰를 요청한다."""
+    """리뷰 담당에게 리뷰를 요청한다. 설계·구현 담당과 다른 에이전트다 (R1)."""
 
 
 @dataclass(frozen=True)
@@ -350,17 +362,20 @@ class TaskView(Protocol):
 # 전이
 
 
-def start_task(event: PostCreated) -> Transition:
-    """게시글 작성 → OPINIONS. 두 에이전트에게 독립된 첫 의견을 요청한다."""
+def start_task(event: PostCreated, roster: Roster = DEFAULT_ROSTER) -> Transition:
+    """게시글 작성 → OPINIONS. 의견 담당 팀장들에게 독립된 첫 의견을 요청한다."""
     return Transition(
         TaskState.OPINIONS,
-        (RequestOpinions(BOTH_AGENTS, event.text, with_history=False),),
+        (RequestOpinions(roster.opinions, event.text, with_history=False),),
         {"opinion_rounds": 0},
     )
 
 
-def transition(task: TaskView, event: Event, limits: Limits | None = None) -> Transition:
+def transition(
+    task: TaskView, event: Event, limits: Limits | None = None, roster: Roster | None = None
+) -> Transition:
     limits = limits or Limits()
+    roster = roster or DEFAULT_ROSTER
     state = task.state
     if isinstance(event, Command) and event.name is CommandName.STOP:
         if state.is_terminal:
@@ -370,7 +385,7 @@ def transition(task: TaskView, event: Event, limits: Limits | None = None) -> Tr
             (CancelAgentRuns(), CleanupStopped(), PostNotice(NoticeCode.STOPPED)),
         )
     if state is TaskState.OPINIONS:
-        return _opinions(task, event)
+        return _opinions(task, event, roster)
     if isinstance(event, ZeroMessage):
         return _reject(state)
     handler = _HANDLERS.get(state)
@@ -433,7 +448,7 @@ def _testing(task: TaskView, event: Event, limits: Limits) -> Transition | None:
         retry = task.test_retry + 1
         if retry > limits.max_test_retries + task.test_limit_bonus:
             return _needs_human(TaskState.TESTING, f"테스트 실패가 {retry}회째다", test_retry=retry)
-        # 테스트 실패는 Alpha를 부르지 않고 바로 수정 (운영 규약 1.7)
+        # 테스트 실패는 리뷰 담당을 부르지 않고 바로 수정 (운영 규약 1.7)
         return Transition(TaskState.FIXING, (StartFix(FixSource.TESTS),), {"test_retry": retry})
     if isinstance(event, StageFailed):
         return _needs_human(TaskState.TESTING, event.reason)
@@ -510,12 +525,12 @@ _HANDLERS = {
 }
 
 
-def _opinions(task: TaskView, event: Event) -> Transition:
+def _opinions(task: TaskView, event: Event, roster: Roster) -> Transition:
     state = TaskState.OPINIONS
     if not isinstance(event, ZeroMessage | Command):
         return Transition(state)  # 의견 단계에는 내부 이벤트가 없다
     if isinstance(event, ZeroMessage):
-        agents, question = _parse_target(event.text)
+        agents, question = _parse_target(event.text, roster)
         rounds = task.opinion_rounds + 1
         effects: list[Effect] = [RequestOpinions(agents, question, with_history=True)]
         if rounds == OPINION_NOTICE_AFTER + 1:
@@ -535,16 +550,16 @@ def _opinions(task: TaskView, event: Event) -> Transition:
     return _reject(state)
 
 
-def _parse_target(text: str) -> tuple[tuple[AgentName, ...], str]:
+def _parse_target(text: str, roster: Roster) -> tuple[tuple[AgentName, ...], str]:
     stripped = text.lstrip()
-    for agent in BOTH_AGENTS:
+    for agent in roster.callable:
         prefix = f"@{agent}"
         if stripped.lower().startswith(prefix):
             rest = stripped[len(prefix) :]
-            # "@claudette"처럼 이름이 이어지면 지정으로 보지 않는다
+            # "@betamax"처럼 이름이 이어지면 지정으로 보지 않는다
             if not rest or rest[0].isspace():
                 return (agent,), rest.strip()
-    return BOTH_AGENTS, text.strip()
+    return roster.opinions, text.strip()
 
 
 def _reject(state: TaskState, reason: str = "") -> Transition:

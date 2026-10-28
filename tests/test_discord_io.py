@@ -14,13 +14,14 @@ from bot.config import load_config
 from bot.discord_io.chat import DiscordChat
 from bot.discord_io.client import EMPTY_POST, ZeroSyncBot, project_contexts
 from bot.discord_io.rules import (
-    AUTHOR_NAMES,
     IncomingMessage,
     MessageKind,
+    author_name,
     classify,
     command_error,
     split_text,
 )
+from bot.org import DEFAULT_ORG
 from bot.render.status import render_ping, render_status
 from bot.store.repo import TaskRecord
 from bot.workflow.chat import Attachment
@@ -86,11 +87,16 @@ def test_split_text():
 
 
 def test_author_names_follow_operating_rules():
-    assert AUTHOR_NAMES == {
-        "claude": "[Beta · Claude]",
-        "codex": "[Alpha · Codex]",
-        "bot": "[ZeroSync]",
-    }
+    # 표시 이름은 `[이름 · 직책]` (운영 규약 1.2, SPEC Q16). 엔진은 드러나지 않는다
+    assert [author_name(DEFAULT_ORG, a) for a in ("beta", "gamma", "alpha", "delta", "bot")] == [
+        "[Beta · 기획팀장]",
+        "[Gamma · 디자인팀장]",
+        "[Alpha · 개발팀장]",
+        "[Delta · QA팀장]",
+        "[ZeroSync]",
+    ]
+    # ADR-005 기준 기록의 행위자
+    assert author_name(DEFAULT_ORG, "codex") == "[Alpha · Codex]"
 
 
 # DiscordChat
@@ -122,12 +128,12 @@ def make_chat():
 
 def test_post_silent_without_mention():
     chat, webhook, _, asked = make_chat()
-    message_id = run(chat.post("500", "codex", "의견"))
+    message_id = run(chat.post("500", "alpha", "의견"))
     assert message_id == "1001"
     assert asked == [500]
     ((content, kwargs),) = webhook.calls
     assert content == "의견"
-    assert kwargs["username"] == "[Alpha · Codex]"
+    assert kwargs["username"] == "[Alpha · 개발팀장]"
     assert kwargs["thread"].id == 500
     assert kwargs["silent"] is True
     assert kwargs["wait"] is True
@@ -139,7 +145,7 @@ def test_post_with_mention_splits_and_attaches_on_last():
     chat, webhook, _, _ = make_chat()
     text = "\n".join(["가" * 1000] * 3)
     message_id = run(
-        chat.post("500", "claude", text, mention=True, attachments=[Attachment("a.md", "전문")])
+        chat.post("500", "beta", text, mention=True, attachments=[Attachment("a.md", "전문")])
     )
     assert message_id == "1001"
     assert len(webhook.calls) == 3
@@ -210,7 +216,7 @@ def bot(tmp_path):
         "    github: owner/GagaeSsi\n"
         "    test: swift test\n"
         "    vault_dir: d\n    vault_hub: h.md\n    vault_tag: brain/g\n    vault_slug: g\n"
-        "paths:\n  vault_projects: /vault\n",
+        "paths:\n  vault_projects: /vault\n  company: /nonexistent/zerosync-company\n",
         encoding="utf-8",
     )
     environ = {

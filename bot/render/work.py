@@ -121,7 +121,7 @@ def render_pr_body(
     branch: str,
     issue: int,
 ) -> str:
-    """PR 본문 (운영 규약 1.9). 변경 요약·설계 의도·확인할 점은 Beta의 구현 보고에서 온다."""
+    """PR 본문 (운영 규약 1.9). 변경 요약·설계 의도·확인할 점은 구현 담당의 보고에서 온다."""
     lines = ["## 결정", "", decision.strip(), ""]
     if report is not None:
         lines += ["## 변경 요약", "", report.changes_summary, ""]
