@@ -32,3 +32,4 @@ Architecture Decision Records — 중요한 기술 선택의 근거를 남긴다
 - [ADR-006](ADR-006-회사형-구조.md) — ZeroSync를 팀 단위 회사 구조로 재설계 *(일부 ADR-007로 대체)*
 - [ADR-007](ADR-007-회사-재정의.md) — 회사 재정의: 부서 구조와 제품 부서 운영
 - [ADR-008](ADR-008-팀장-팀원-구조.md) — 팀장·팀원 구조: 개발·QA 팀원과 팀장 확인
+- [ADR-009](ADR-009-교육-Daily.md) — 교육 부서 시작: 교육팀장 Eta와 Daily 자동 생성
