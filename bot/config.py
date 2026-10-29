@@ -28,6 +28,7 @@ from pydantic import (
 from bot.agents.base import Stage
 from bot.org import Org, OrgError, load_org
 from bot.pipeline import Pipeline, PipelineError, load_pipelines
+from bot.scheduler import CronError, parse_cron
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 DEFAULT_PROJECTS_PATH = PACKAGE_DIR / "projects.yaml"
@@ -161,9 +162,30 @@ class LimitsConfig(_Model):
     remind_after_hours: int = Field(default=24, ge=1)
 
 
+class EducationConfig(_Model):
+    """교육 부서 Daily (ADR-009). 없으면 교육 일정을 돌리지 않는다."""
+
+    # Zero의 학습 볼트 루트 (AGENTS.md, Daily/, Schedule/가 있는 폴더)
+    vault: ExpandedPath
+    agent: str = "eta"
+    schedule: str = "30 7 * * *"  # 매일 07:30, 아침 보고(08:00) 전
+    # #교육 채널. 없으면 #대표실(없으면 운영 채널)에 알린다
+    channel_id: DiscordId | None = None
+
+    @field_validator("schedule")
+    @classmethod
+    def _cron(cls, value: str) -> str:
+        try:
+            parse_cron(value)
+        except CronError as error:
+            raise ValueError(str(error)) from None
+        return value
+
+
 class ProjectsFile(_Model):
     projects: dict[str, ProjectConfig] = Field(min_length=1)
     paths: PathsConfig
+    education: EducationConfig | None = None
     cli: CliConfig = CliConfig()
     limits: LimitsConfig = LimitsConfig()
 
@@ -206,6 +228,7 @@ class Config(_Model):
     secrets: Secrets
     org: Org
     pipelines: dict[str, Pipeline]
+    education: EducationConfig | None = None
 
     def project_for_chat(self, channel_id: str) -> str | None:
         """제품 채팅 채널 ID로 프로젝트 키를 찾는다."""
@@ -288,6 +311,9 @@ def load_config(
         pipelines = load_pipelines(projects.paths.company, org)
     except (OrgError, PipelineError) as error:
         raise ConfigError(str(error)) from None
+    education = projects.education
+    if education is not None and education.agent not in org.agents:
+        raise ConfigError(f"education.agent {education.agent!r}가 조직(org.yaml)에 없다")
     return Config(
         projects=projects.projects,
         paths=projects.paths,
@@ -296,6 +322,7 @@ def load_config(
         secrets=secrets,
         org=org,
         pipelines=pipelines,
+        education=education,
     )
 
 

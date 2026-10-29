@@ -575,6 +575,27 @@ class Engine(WorkStages):
         lines = [rejected_line(r.payload, r.decided_note) for r in rejected]
         return persona_for(self._org, agent, lines)
 
+    async def ask_outside_task(
+        self,
+        scope_name: str,
+        agent: AgentName,
+        stage: Stage,
+        build_prompt: Callable[[Persona], str],
+        *,
+        model: type[M],
+        cwd: Path,
+        verify: Verify | None = None,
+    ) -> _Answer[M]:
+        """작업(포럼 포스트) 없이 에이전트를 부른다. 교육 Daily처럼 제품 밖의 일에 쓴다 (ADR-009).
+
+        대기열·하루 한도·사용량 정지·실행 기록은 제품 일과 같다.
+        실행 기록의 project는 scope_name이다.
+        """
+        prompt = build_prompt(await self._persona(agent))
+        return await self._ask(
+            ChatScope(scope_name), agent, stage, prompt, model=model, cwd=cwd, verify=verify
+        )
+
     async def _ask(
         self,
         scope: Scope,

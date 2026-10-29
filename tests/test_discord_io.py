@@ -449,7 +449,7 @@ def test_intents_include_message_content(bot):
     names = {command.name for command in bot.tree.get_commands(guild=bot.guild_ref)}
     assert names == {
         "task", "release", "debate", "idea", "approve", "revise", "skip", "fix",
-        "resume", "stop", "hire", "status", "ping",
+        "resume", "stop", "hire", "status", "ping", "daily",
     }  # fmt: skip
     project = project_contexts(bot.config)["gagaessi"]
     assert project.github.repo == "owner/GagaeSsi"
@@ -522,3 +522,51 @@ def test_due_reports_run_once_and_go_to_report_channel(bot):
     assert sorted(first) == ["morning_report", "weekly_report"]
     assert again == [] and next_day == ["morning_report"]
     assert sent[0][0].startswith("**아침 보고**") and sent[1][0].startswith("**주간 보고**")
+
+
+def test_education_daily_runs_on_its_schedule_once(bot, tmp_path):
+    from bot.clock import FixedClock
+    from bot.config import EducationConfig
+    from bot.store import Repository, connect
+
+    bot.config = bot.config.model_copy(
+        update={"education": EducationConfig(vault=tmp_path, schedule="30 7 * * *")}
+    )
+    runs = []
+
+    class Desk:
+        async def run_daily(self):
+            runs.append("daily")
+
+    bot.education = Desk()
+
+    async def main():
+        conn = await connect(":memory:")
+        try:
+            clock = FixedClock(datetime(2026, 10, 28, 22, 40, tzinfo=UTC))  # 한국 목 07:40
+            bot.clock = clock
+            bot.repo = Repository(conn, clock)
+
+            async def report(text, *, mention=False):
+                pass
+
+            bot.chat.report = report
+            first = await bot.run_due_schedules()
+            again = await bot.run_due_schedules()
+            await drain(bot)
+            return first, again
+        finally:
+            await conn.close()
+
+    first, again = run(main())
+    assert "education_daily" in first and "education_daily" not in again
+    assert runs == ["daily"]
+
+
+def test_daily_command_is_zero_only_and_needs_education(bot):
+    other = interaction(user_id=7)
+    run(bot.run_daily(other))
+    assert "Zero만" in other.response.sent[0][0]
+    zero = interaction()
+    run(bot.run_daily(zero))
+    assert "교육 설정" in zero.response.sent[0][0]

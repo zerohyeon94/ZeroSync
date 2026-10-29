@@ -11,6 +11,7 @@ import pytest
 from bot.org import DEFAULT_ORG
 from bot.prompts import (
     HistoryEntry,
+    concept_note_prompt,
     debate_prompt,
     lead_check_prompt,
     opinion_prompt,
@@ -219,3 +220,16 @@ def test_action_required_covers_only_listed_moments():
         Moment.STAGE_DONE,
         Moment.NOTICE,
     }
+
+
+def test_concept_note_prompt_snapshot():
+    prompt = concept_note_prompt(
+        persona_for(DEFAULT_ORG, "eta"),
+        day="2026-11-01",
+        label="엣지-중앙 서버 구조",
+        item="엣지-중앙 서버 구조: 장비 안의 AI 엔진·에이전트와 중앙 서버의 역할 나누기",
+        section="전체",
+        month="시스템 전체 한 바퀴",
+    )
+    assert "회사/" in prompt  # 금지 안내
+    check_snapshot("concept_note_eta", prompt)

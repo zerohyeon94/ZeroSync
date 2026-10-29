@@ -149,6 +149,10 @@ class DiscordChat:
     async def report(self, text: str, *, mention: bool = False) -> None:
         await self._send(await self._report_channel(), text, mention)
 
+    async def send(self, channel: ChannelLike, text: str, *, mention: bool = False) -> None:
+        """설정에 등록된 다른 채널(#교육 등)에 봇 이름으로 보낸다."""
+        await self._send(channel, text, mention)
+
     async def _send(self, channel: ChannelLike, text: str, mention: bool) -> None:
         for index, chunk in enumerate(self._content(text, mention)):
             await channel.send(

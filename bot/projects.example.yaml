@@ -26,13 +26,20 @@ paths:
   # 비공개 회사 설정(org.yaml, agents/). 없으면 기본 조직(ADR-007)을 쓴다. 예시는 examples/company
   company: ~/.zerosync/company
 
+# 교육 부서 Daily (ADR-009). 생략하면 교육 일정을 돌리지 않는다
+education:
+  vault: ~/Library/Mobile Documents/iCloud~md~obsidian/Documents/my-vault
+  agent: eta                # 교육팀장 (org.yaml의 에이전트)
+  schedule: "30 7 * * *"    # 매일 07:30
+  channel_id: "123456789012345684"   # #교육. 생략하면 #대표실에 알린다
+
 # 생략하면 기본값을 쓴다
 cli:
   claude: claude        # launchd PATH에서 못 찾으면 절대 경로 (예: /opt/homebrew/bin/claude)
   codex: codex
   # 단계별 모델. 적지 않은 단계는 각 CLI의 기본 모델을 쓴다
   # Claude 단계: opinion, debate, plan, ui_design, design, implement, fix, review,
-  #   diagnose, release_prep, doc_sync
+  #   diagnose, lead_check, release_prep, doc_sync, concept_note
   claude_models:
     opinion: sonnet
     debate: sonnet

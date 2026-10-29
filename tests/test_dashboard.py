@@ -307,4 +307,4 @@ def test_team_page_shows_status_jobs_and_persona(settings):
     alpha = body[body.index('id="alpha"') : body.index('id="epsilon"')]
     assert "쉬는 중" in alpha and "기능 개발 · 구현 (확인)" in alpha
     assert "# Zeta &lt;성격&gt;" in body  # 인격 파일은 이스케이프해 보인다
-    assert "6명 중 1명이 일하는 중" in body
+    assert "7명 중 1명이 일하는 중" in body

@@ -47,6 +47,7 @@ STAGE_LABELS = {
     "review": "리뷰",
     "release_prep": "출시 준비",
     "doc_sync": "문서 반영",
+    "concept_note": "개념 노트",
 }
 KIND_LABELS = {
     "message": "메시지",
@@ -573,9 +574,13 @@ def _elapsed(since: str, now: datetime) -> str:
     return f"{minutes:.0f}분" if minutes < 60 else _age(since, now)
 
 
-def assignments(pipelines: Mapping[str, Pipeline]) -> dict[str, list[str]]:
+def assignments(
+    pipelines: Mapping[str, Pipeline], education: str | None = None
+) -> dict[str, list[str]]:
     """에이전트별로 맡은 흐름 단계. 팀장 확인은 `(확인)`을 붙인다."""
     jobs: dict[str, list[str]] = {}
+    if education is not None:
+        jobs[education] = ["교육 · 매일 Daily 개념 노트"]
     for pipeline in pipelines.values():
         for stage in pipeline.stages:
             label = STAGE_LABELS.get(stage.kind.value, stage.kind.value)

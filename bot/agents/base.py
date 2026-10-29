@@ -29,6 +29,7 @@ class Stage(StrEnum):
     LEAD_CHECK = "lead_check"  # 팀원 결과를 팀장이 확인 (ADR-008)
     RELEASE_PREP = "release_prep"
     DOC_SYNC = "doc_sync"
+    CONCEPT_NOTE = "concept_note"  # 교육 Daily 개념 노트 (ADR-009)
 
 
 class RunStatus(StrEnum):

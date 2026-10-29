@@ -349,3 +349,25 @@ def test_broken_org_is_a_config_error(tmp_path):
     text = yaml_text().replace("/nonexistent/zerosync-company", str(company))
     with pytest.raises(ConfigError, match="org.yaml"):
         load(tmp_path, text)
+
+
+# 교육 (ADR-009)
+
+
+def test_education_section_is_optional_and_validated(tmp_path):
+    assert load(tmp_path).education is None
+    config = load(
+        tmp_path,
+        yaml_text(extra='education:\n  vault: ~/vault\n  channel_id: "555"\n'),
+    )
+    education = config.education
+    assert education.vault == Path.home() / "vault"
+    assert (education.agent, education.schedule, education.channel_id) == (
+        "eta",
+        "30 7 * * *",
+        "555",
+    )
+    with pytest.raises(ConfigError, match="omega"):
+        load(tmp_path, yaml_text(extra="education:\n  vault: ~/vault\n  agent: omega\n"))
+    with pytest.raises(ConfigError, match="schedule"):
+        load(tmp_path, yaml_text(extra='education:\n  vault: ~/vault\n  schedule: "x"\n'))

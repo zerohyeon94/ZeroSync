@@ -10,6 +10,7 @@ from bot.schemas.design import (
     ChangeType,
     DesignSummary,
 )
+from bot.schemas.education import ConceptNote
 from bot.schemas.extract import AgentOutputError, extract_json, parse_agent_output
 from bot.schemas.hiring import HiringKind, HiringProposal
 from bot.schemas.implementation import FindingResponse, ImplementationReport, ResponseAction
@@ -35,6 +36,7 @@ __all__ = [
     "DiagnosisReport",
     "DocSyncProposal",
     "ChangeType",
+    "ConceptNote",
     "DesignSummary",
     "Finding",
     "HiringKind",

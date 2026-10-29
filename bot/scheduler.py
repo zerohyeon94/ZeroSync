@@ -17,6 +17,8 @@ BUILTIN_SCHEDULES = {
     MORNING_REPORT: "0 8 * * *",  # 매일 08:00
     WEEKLY_REPORT: "0 8 * * 1",  # 월요일 08:00
 }
+# 교육 Daily (ADR-009). 시각은 설정(education.schedule)이 정한다
+EDUCATION_DAILY = "education_daily"
 
 
 class CronError(ValueError):

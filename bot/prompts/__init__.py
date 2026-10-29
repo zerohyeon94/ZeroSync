@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from bot.org import Org
 from bot.schemas import (
     ChangeSummary,
+    ConceptNote,
     DesignSummary,
     DiagnosisReport,
     DocSyncProposal,
@@ -522,4 +523,25 @@ def doc_sync_prompt(
         hub=hub,
         today=today,
         schema=_schema(DocSyncProposal),
+    )
+
+
+def concept_note_prompt(
+    persona: Persona,
+    *,
+    day: str,
+    label: str,
+    item: str,
+    section: str,
+    month: str,
+) -> str:
+    """교육팀장의 개념 노트 본문 (ADR-009)."""
+    return _template("concept_note").substitute(
+        _persona(persona),
+        day=day,
+        label=label.strip(),
+        item=item.strip(),
+        section=section.strip() or "-",
+        month=month.strip(),
+        schema=_schema(ConceptNote),
     )

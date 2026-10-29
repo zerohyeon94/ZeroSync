@@ -30,8 +30,15 @@ from bot.discord_io.rules import (
 from bot.github import GitHubClient, VaultGit
 from bot.render.status import render_ping, render_status
 from bot.reports import Report, morning_report, weekly_report
-from bot.scheduler import BUILTIN_SCHEDULES, MORNING_REPORT, is_due, parse_cron
+from bot.scheduler import (
+    BUILTIN_SCHEDULES,
+    EDUCATION_DAILY,
+    MORNING_REPORT,
+    is_due,
+    parse_cron,
+)
 from bot.store import Repository
+from bot.workflow.education import EducationDesk
 from bot.workflow.engine import PAUSE_KEY, Engine, ProjectContext
 from bot.workflow.gate import AgentGate
 from bot.workflow.mentions import Moment, should_mention
@@ -126,6 +133,17 @@ class ZeroSyncBot(discord.Client):
             usage_pause=timedelta(minutes=config.limits.usage_pause_minutes),
             vault=VaultGit(),
         )
+        self.education: EducationDesk | None = None
+        if config.education is not None:
+            self.education = EducationDesk(
+                self.engine,
+                VaultGit(),
+                config.education.vault,
+                config.education.agent,
+                config.org.display(config.education.agent),
+                self._education_notify,
+                self.clock,
+            )
         self._webhooks: dict[int, discord.Webhook] = {}
         self._background: set[asyncio.Task[None]] = set()
         self._started = False
@@ -216,6 +234,13 @@ class ZeroSyncBot(discord.Client):
             report = await self._build_report(job, now)
             await self.chat.report(report.text, mention=report.mention)
             ran.append(job)
+        education = self.config.education
+        if self.education is not None and education is not None:
+            previous = from_iso(last[EDUCATION_DAILY]) if EDUCATION_DAILY in last else None
+            if is_due(parse_cron(education.schedule), local, previous):
+                await self.repo.record_schedule_run(EDUCATION_DAILY, to_iso(now))
+                self.spawn(self.education.run_daily(), "교육 Daily")
+                ran.append(EDUCATION_DAILY)
         # 파이프라인 일정 (정기 테스트 등): 제품마다 따로 (SPEC 6.6, ADR-007)
         for key, pipeline in self.engine.pipelines.items():
             if pipeline.schedule is None or "schedule" not in pipeline.triggers:
@@ -237,6 +262,33 @@ class ZeroSyncBot(discord.Client):
                 self.repo, self.config.org, now, self.thread_url, paused=paused
             )
         return await weekly_report(self.repo, self.config.org, now, list(self.config.projects))
+
+    async def _education_notify(self, text: str, mention: bool) -> None:
+        """교육팀장 이름으로 #교육에 알린다. 채널이 없으면 #대표실(없으면 운영 채널)."""
+        education = self.config.education
+        assert education is not None
+        text = f"**[{self.config.org.display(education.agent)}]**\n{text}"
+        if education.channel_id is None:
+            await self.chat.report(text, mention=mention)
+            return
+        channel_id = int(education.channel_id)
+        channel = self.get_channel(channel_id) or await self.fetch_channel(channel_id)
+        await self.chat.send(channel, text, mention=mention)
+
+    async def run_daily(self, interaction: discord.Interaction) -> None:
+        """오늘 Daily를 지금 만든다 (/daily). 이미 있으면 만들지 않는다."""
+        if interaction.user.id != self.zero_user_id:
+            await interaction.response.send_message(
+                "이 봇의 명령은 Zero만 쓸 수 있다.", ephemeral=True
+            )
+            return
+        if self.education is None:
+            await interaction.response.send_message(
+                "교육 설정(projects.yaml의 education)이 없다.", ephemeral=True
+            )
+            return
+        await interaction.response.send_message("오늘 Daily를 만든다.", ephemeral=True)
+        self.spawn(self.education.run_daily(), "교육 Daily")
 
     async def _report_channel(self) -> Any:
         assert self.report_channel_id is not None
@@ -587,6 +639,10 @@ def _register_commands(bot: ZeroSyncBot) -> None:
     @tree.command(name="status", description="이 작업의 상태와 진행 횟수", guild=guild)
     async def status(interaction: discord.Interaction) -> None:
         await bot.show_status(interaction)
+
+    @tree.command(name="daily", description="오늘 Daily와 개념 노트를 지금 만든다", guild=guild)
+    async def daily(interaction: discord.Interaction) -> None:
+        await bot.run_daily(interaction)
 
     @tree.command(name="ping", description="봇 생존과 실행 중인 CLI 수", guild=guild)
     async def ping(interaction: discord.Interaction) -> None:
