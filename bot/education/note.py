@@ -15,7 +15,6 @@ SECTIONS = (
     "## 단어 정리",
     "## 확인 문제",
 )
-CLOSING = "## 내 말로 한 줄 (선택)"
 QUESTIONS = 3
 OPTIONS = ("A.", "B.", "C.", "D.")
 ANSWER = "> [!answer]-"
@@ -36,7 +35,7 @@ def check_note(body: str) -> list[str]:
             problems.append(f"빠진 섹션: {', '.join(missing)}")
         else:
             problems.append(f"섹션 순서는 {' → '.join(s[3:] for s in SECTIONS)}이다")
-    extra = [h for h in headings if h not in SECTIONS and h != CLOSING]
+    extra = [h for h in headings if h not in SECTIONS]
     if extra:
         problems.append(f"템플릿에 없는 섹션: {', '.join(extra)}")
     problems += _check_questions(text)
@@ -68,8 +67,5 @@ def _check_questions(text: str) -> list[str]:
 
 
 def complete_note(header: str, body: str) -> str:
-    """머리말을 붙이고, 끝 섹션이 없으면 템플릿대로 빈 칸을 둔다."""
-    text = body.strip()
-    if CLOSING not in text:
-        text += f"\n\n{CLOSING}\n"
-    return header + text.rstrip() + "\n"
+    """봇이 정한 제목·머리말을 붙인다."""
+    return header + body.strip() + "\n"

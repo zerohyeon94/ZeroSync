@@ -264,6 +264,7 @@ def test_valid_note_has_no_problems():
         (BODY.replace("- [ ] D. 넷", "", 1), "1번 문제"),
         (BODY.replace("> [!answer]- 정답과 해설\n> - 정답: B", "> 정답: B"), "2번 문제"),
         (BODY + "\n`회사/플랫폼 지도.md` 참고\n", "회사 폴더"),
+        (BODY + "\n## 내 말로 한 줄 (선택)\n", "템플릿에 없는 섹션"),
     ],
 )
 def test_note_problems_are_reported(body, problem):
@@ -344,7 +345,7 @@ def test_new_day_writes_note_daily_queue_and_commits(tmp_path):
     note = root / "Learning/개념/2026-11-02 엣지-중앙 서버 구조.md"
     text = note.read_text("utf-8")
     assert text.startswith("# 엣지-중앙 서버 구조\n\n> Daily: [[2026-11-02]] · 이번 달 주제: ")
-    assert text.rstrip().endswith("## 내 말로 한 줄 (선택)")
+    assert text.rstrip().endswith("> - 해설: 셋이다") and "내 말로 한 줄" not in text
     daily = (root / "Daily/2026-11/2026-11-02.md").read_text("utf-8")
     assert "# 2026-11-02 (월)" in daily and "플랫폼 지도: '전체'" in daily
     assert "→ [[Learning/개념/2026-11-02 엣지-중앙 서버 구조|" in (
