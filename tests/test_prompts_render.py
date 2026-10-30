@@ -11,10 +11,12 @@ import pytest
 from bot.org import DEFAULT_ORG
 from bot.prompts import (
     HistoryEntry,
+    concept_note_prompt,
     debate_prompt,
     lead_check_prompt,
     opinion_prompt,
     persona_for,
+    weekly_quiz_prompt,
     with_format_error,
 )
 from bot.render import MAX_POST_LENGTH, render_format_error, render_notice, render_opinion_post
@@ -219,3 +221,26 @@ def test_action_required_covers_only_listed_moments():
         Moment.STAGE_DONE,
         Moment.NOTICE,
     }
+
+
+def test_concept_note_prompt_snapshot():
+    prompt = concept_note_prompt(
+        persona_for(DEFAULT_ORG, "eta"),
+        day="2026-11-01",
+        label="엣지-중앙 서버 구조",
+        item="엣지-중앙 서버 구조: 장비 안의 AI 엔진·에이전트와 중앙 서버의 역할 나누기",
+        section="전체",
+        month="시스템 전체 한 바퀴",
+    )
+    assert "회사/" in prompt  # 금지 안내
+    check_snapshot("concept_note_eta", prompt)
+
+
+def test_weekly_quiz_prompt_snapshot():
+    prompt = weekly_quiz_prompt(
+        persona_for(DEFAULT_ORG, "eta"),
+        facts="**주간 학습 보고** (11-02 ~ 11-08)\n- Daily: 7일 중 5일 · 끝낸 개념 3개",
+        notes=["Learning/개념/2026-11-02 엣지-중앙 서버 구조", "Learning/개념/2026-11-04 gRPC"],
+    )
+    assert "5~8문제" in prompt and "`Learning/개념/2026-11-04 gRPC.md`" in prompt
+    check_snapshot("weekly_quiz_eta", prompt)

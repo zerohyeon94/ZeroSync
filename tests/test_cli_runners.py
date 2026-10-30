@@ -281,3 +281,16 @@ def test_codex_without_last_message_falls_back_to_stdout(tmp_path, process):
     assert result.status is RunStatus.ERROR
     assert result.exit_code == 2
     assert result.stdout == "부분 출력\n"
+
+
+def test_claude_concept_note_reads_and_searches_web_only(tmp_path, process):
+    argv = ClaudeCliRunner(process).build_argv(request(tmp_path, Stage.CONCEPT_NOTE, "read_only"))
+    assert value_after(argv, "--permission-mode") == "dontAsk"
+    assert values_after(argv, "--allowedTools") == ["Read", "Glob", "Grep", "WebSearch", "WebFetch"]
+    assert "Read(회사/**)" in values_after(argv, "--disallowedTools")
+
+
+def test_claude_weekly_quiz_is_read_only(tmp_path, process):
+    argv = ClaudeCliRunner(process).build_argv(request(tmp_path, Stage.WEEKLY_QUIZ, "read_only"))
+    assert value_after(argv, "--permission-mode") == "plan"
+    assert "Read(회사/**)" in values_after(argv, "--disallowedTools")

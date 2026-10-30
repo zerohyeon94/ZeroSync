@@ -27,7 +27,15 @@ LEGACY_AGENTS: dict[str, tuple[str, EngineName]] = {
 
 # Codex 러너는 읽기 전용 샌드박스로만 실행된다 (운영 규약 1.3)
 READ_ONLY_STAGES = frozenset(
-    {Stage.OPINION, Stage.DEBATE, Stage.REVIEW, Stage.DIAGNOSE, Stage.LEAD_CHECK}
+    {
+        Stage.OPINION,
+        Stage.DEBATE,
+        Stage.REVIEW,
+        Stage.DIAGNOSE,
+        Stage.LEAD_CHECK,
+        Stage.CONCEPT_NOTE,
+        Stage.WEEKLY_QUIZ,
+    }
 )
 
 _AGENT_KEY = re.compile(r"^[a-z][a-z0-9]{0,19}$")
@@ -164,13 +172,14 @@ class Org(_Model):
 
 
 def _default_org() -> Org:
-    """ADR-007·ADR-008의 제품 부서 기본 구성. org.yaml이 없을 때 쓴다."""
+    """ADR-007·ADR-008의 제품 부서와 ADR-009의 교육 부서 기본 구성. org.yaml이 없을 때 쓴다."""
     return Org(
         teams={
             "planning": TeamSpec(name="기획", lead="beta"),
             "design": TeamSpec(name="디자인", lead="gamma"),
             "dev": TeamSpec(name="개발", lead="alpha"),
             "qa": TeamSpec(name="QA", lead="delta"),
+            "education": TeamSpec(name="교육", lead="eta", department="education"),
         },
         agents={
             "beta": AgentSpec(
@@ -230,6 +239,18 @@ def _default_org() -> Org:
                 basic_question="왜 실패하는가, 다시 일으킬 수 있는가",
                 hired="2026-10-28",
                 reason="버그·정기 테스트 실패 진단 (ADR-008)",
+            ),
+            "eta": AgentSpec(
+                display="Eta",
+                team="education",
+                mbti="ENFJ",
+                perspective=(
+                    "처음 듣는 사람도 따라오는 설명, 확인된 사실만, 하루 20~30분 분량, "
+                    "끊기지 않게 이어 가기"
+                ),
+                basic_question="오늘 이것 하나로 무엇을 알게 되는가",
+                hired="2026-10-29",
+                reason="교육 부서 Daily 개념 노트 (ADR-009)",
             ),
         },
     )

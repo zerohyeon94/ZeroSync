@@ -27,6 +27,7 @@ def main(argv: list[str] | None = None) -> int:
         },
         org=config.org,
         pipelines=config.pipelines,
+        education_agent=config.education.agent if config.education else None,
     )
     server = serve(settings, args.port)
     print(f"대시보드: http://{HOST}:{args.port}  (종료: Ctrl-C)", file=sys.stderr)

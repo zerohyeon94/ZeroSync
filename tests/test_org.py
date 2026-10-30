@@ -42,7 +42,7 @@ def write(tmp_path, text=ORG_YAML, persona="역량: 문제 정의"):
     return tmp_path
 
 
-def test_default_org_is_adr_007_product_department():
+def test_default_org_is_product_and_education_departments():
     org = DEFAULT_ORG
     assert [org.display(a) for a in org.agent_names] == [
         "Beta · 기획팀장",
@@ -51,7 +51,9 @@ def test_default_org_is_adr_007_product_department():
         "Delta · QA팀장",
         "Epsilon · 개발팀원",
         "Zeta · QA팀원",
+        "Eta · 교육팀장",
     ]
+    assert org.teams["education"].department == "education"
     assert {org.engine(a) for a in org.agent_names} == {"claude"}
     roles = org.roles
     assert (roles.design, roles.implement, roles.review, roles.doc_sync) == (
@@ -124,7 +126,8 @@ def test_example_company_config_is_valid():
     from pathlib import Path
 
     org = load_org(Path(__file__).resolve().parent.parent / "examples" / "company")
-    assert org.agent_names == ("beta", "gamma", "alpha", "delta", "epsilon", "zeta")
+    assert org.agent_names == DEFAULT_ORG.agent_names
     assert org.display("epsilon") == "Epsilon · 개발팀원"
+    assert org.display("eta") == "Eta · 교육팀장"
     assert all(org.profile(agent) for agent in org.agent_names)
     assert org.roles == DEFAULT_ORG.roles

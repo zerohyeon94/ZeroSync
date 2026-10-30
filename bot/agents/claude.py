@@ -9,6 +9,7 @@
 - 읽기 전용: `--permission-mode plan`
 - DESIGN: `dontAsk` + 읽기 도구, `docs/설계/` 쓰기, 로컬 커밋만 허용
 - IMPLEMENT·FIX: `acceptEdits`(작업 폴더 안 편집) + 로컬 git 명령만 허용
+- CONCEPT_NOTE: `dontAsk` + 읽기 도구와 웹 검색·가져오기. 볼트의 `회사/`는 읽지 않는다
 - 공통 금지: push·원격 git 명령, `.env` 접근. 사용자 MCP 서버는 불러오지 않는다
 """
 
@@ -40,6 +41,8 @@ DOC_STAGE_TOOLS = {
     Stage.DESIGN: DESIGN_TOOLS,
 }
 IMPLEMENT_TOOLS = (*READ_TOOLS, "Edit", "Write", *LOCAL_GIT)
+# 사실 확인이 필요한 읽기 단계. 파일은 쓰지 않는다 (ADR-009)
+RESEARCH_STAGE_TOOLS = {Stage.CONCEPT_NOTE: (*READ_TOOLS, "WebSearch", "WebFetch")}
 DENIED_TOOLS = (
     "Bash(git push:*)",
     "Bash(git pull:*)",
@@ -48,6 +51,8 @@ DENIED_TOOLS = (
     "Read(**/.env)",
     "Edit(**/.env)",
     "Write(**/.env)",
+    # 교육 볼트의 회사 폴더는 git 밖의 비공개 정보다 (볼트 AGENTS.md 회사 정보 기준)
+    "Read(회사/**)",
 )
 
 
@@ -99,6 +104,9 @@ class ClaudeCliRunner:
 
 
 def _permission_args(request: AgentRequest) -> list[str]:
+    if request.stage in RESEARCH_STAGE_TOOLS:
+        tools = RESEARCH_STAGE_TOOLS[request.stage]
+        return ["--permission-mode", "dontAsk", "--allowedTools", *tools]
     if request.mode == "read_only":
         return ["--permission-mode", "plan"]
     if request.stage in DOC_STAGE_TOOLS:

@@ -31,6 +31,7 @@ class DashboardSettings:
     daily_calls: Mapping[str, int] = field(default_factory=dict)  # 에이전트별 하루 한도
     org: Org = DEFAULT_ORG  # 직원 화면 (인격 파일 포함)
     pipelines: Mapping[str, Pipeline] = field(default_factory=dict)  # 직원별 맡은 일
+    education_agent: str | None = None  # 교육 Daily 담당 (ADR-009)
     now: Callable[[], datetime] = lambda: datetime.now(UTC)
 
     def discord_url(self, thread: str) -> str | None:
@@ -80,7 +81,7 @@ def _route(
             views.team_page(
                 settings.org,
                 activity,
-                views.assignments(settings.pipelines),
+                views.assignments(settings.pipelines, settings.education_agent),
                 daily_calls=settings.daily_calls,
                 now=now,
             )

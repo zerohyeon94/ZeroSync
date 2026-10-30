@@ -27,7 +27,7 @@
 ## 1. 목표와 범위
 
 ### 1.1 완료 기준 (프로젝트 목표)
-ZeroSync는 Zero 한 사람을 위한 회사다 (ADR-007). 회사는 교육·비서·제품 세 부서로 나뉘고, 이 문서는 지금 **제품 부서**를 다룬다. 제품 부서는 Zero가 부서장을 겸임하고 기획팀(Beta), 디자인팀(Gamma), 개발팀(Alpha), QA팀(Delta)이 가게씨·제이데이·오롯을 맡는다. 교육·비서 부서는 Phase 8에서 정한다.
+ZeroSync는 Zero 한 사람을 위한 회사다 (ADR-007). 회사는 교육·비서·제품 세 부서로 나뉘고, 이 문서는 지금 **제품 부서**를 다룬다. 제품 부서는 Zero가 부서장을 겸임하고 기획팀(Beta), 디자인팀(Gamma), 개발팀(Alpha), QA팀(Delta)이 가게씨·제이데이·오롯을 맡는다. 교육 부서는 ADR-009로 시작했다(교육팀장 Eta, 매일 Daily와 개념 노트, Discord에서 푸는 문제, 일요일 주간 학습 보고와 주간 문제). 비서 부서는 Phase 8에서 정한다.
 
 완료 기준은 다음과 같다.
 
@@ -317,6 +317,9 @@ budget: {max_calls: 6, max_minutes: 45}
 | `/resume` | NEEDS_HUMAN | 직전 상태에서 재개 | [확정] (Q4) |
 | `/status` | 전부 | 상태, 라운드 수, 재시도 수, 대기 시간 | [확정] |
 | `/ping` | 전부 (#zerosync-ops에서도) | 봇 생존, 실행 중 CLI, 대기열 길이 | [확정] |
+| `/daily` | 전부 | 오늘 교육 Daily와 개념 노트를 지금 만든다. 이미 있으면 만들지 않는다 (ADR-009) | [확정] (구현) |
+| `/weekly` | 전부 | 이번 주 학습 보고와 주간 문제를 지금 만든다. 문제는 주마다 한 번 (ADR-009) | [확정] (구현) |
+| (교육 문제 A~D 버튼) | `#교육` | Zero만 답한다. 정답과 해설은 Zero에게만 보이고, 처음 고른 답만 기록한다 (ADR-009) | [확정] (구현) |
 | `/hire <수락\|거절> <제안 번호> [메모]` | 전부 (#대표실, #zerosync-ops에서도) | 팀장의 채용 제안에 답한다. 수락은 기록만 하고 `org.yaml` 변경은 Zero가 한다. 거절 기록은 다음 프롬프트에 들어간다 (운영 규약 1.12, Q19) | [제안] |
 
 - 명령은 discord.py의 앱 명령(슬래시 명령)으로 등록한다. 시작 명령(`/task`, `/release`, `/idea`, `/debate`)은 제품 채팅 채널에서, 진행 명령(`/approve`, `/revise` 등)은 해당 포스트(스레드) 안에서만 동작한다. 다른 곳에서 쓰면 짧은 오류만 보낸다
@@ -462,7 +465,7 @@ class AgentResult:
 ### 6.1 Discord (`bot/discord_io/`)
 - 워크플로는 `ChatIO` 인터페이스만 안다: `post(thread, author, text, *, mention, attachments) -> 메시지 ID`, `notify_ops(text, *, mention)`. 인터페이스는 `bot/workflow/chat.py`에 두고 `bot/discord_io/`가 구현한다 (의존 방향, 7장). `set_tags`는 태그 이름이 정해지면 추가한다 [제안]
 - `mention=False`면 알림 없는 메시지로 보낸다. 멘션 문자열(`<@Zero ID>`)과 1,900자 분할은 구현 쪽 책임이다
-- 채널 구성 [확정] (ADR-007): 제품마다 포럼 `#<제품>`(정식 진행, 팀 보고)과 채팅 `#<제품>-chat`(의견 나누기), Zero 보고용 `#대표실`, 봇 상태용 `#zerosync-ops`. 교육·비서 채널은 Phase 8에서 더한다. 채널 이름은 회사 설정에서 바꿀 수 있다
+- 채널 구성 [확정] (ADR-007): 제품마다 포럼 `#<제품>`(정식 진행, 팀 보고)과 채팅 `#<제품>-chat`(의견 나누기), Zero 보고용 `#대표실`, 봇 상태용 `#zerosync-ops`. 교육 부서는 `#교육`(Daily 알림, 버튼으로 푸는 오늘 문제·복습·주간 문제, 주간 학습 보고, 없으면 `#대표실`, ADR-009). 비서 채널은 Phase 8에서 더한다. 채널 이름은 회사 설정에서 바꿀 수 있다
 - 채팅 답·반박은 답할 팀장들의 응답이 모두 끝난 뒤 `chat_default` 순서(Beta, Alpha)로 게시하고, 마지막 게시에서 멘션한다. 실행 실패한 쪽은 그 자리에 [ZeroSync] 안내를 게시하고 #zerosync-ops에 알린다 (2026-10-10 구현, ADR-005 기준은 포럼 의견)
 - 게시 이름: `[이름 · 직책]`(예: `[Beta · 기획팀장]`, `[Gamma · 디자인팀장]`, `[Alpha · 개발팀장]`, `[Delta · QA팀장]`, `[Epsilon · 개발팀원]`, `[Zeta · QA팀원]`)과 `[ZeroSync]` (운영 규약 1.2, Q16). ADR-005 기준 구현은 `[Beta · Claude]`, `[Alpha · Codex]`다. 에이전트 메시지는 웹훅의 username 지정으로 게시한다
 - 웹훅은 봇이 시작할 때 각 포럼·채팅 채널과 `#대표실`에서 찾거나 만든다(Manage Webhooks 권한). 웹훅 URL을 `.env`에 두지 않는다 [확정] (Q6)
@@ -701,8 +704,25 @@ CREATE TABLE hiring_proposals (
 );
 
 CREATE TABLE schedule_runs (
-  job              TEXT PRIMARY KEY, -- 'morning_report', 'weekly_report', '<제품>:<파이프라인>'
+  job              TEXT PRIMARY KEY, -- 'morning_report', 'weekly_report', 'education_daily', 'education_weekly', '<제품>:<파이프라인>'
   last_run_at      TEXT NOT NULL     -- 놓친 실행 따라잡기 기준 (6.6)
+);
+
+CREATE TABLE quizzes (              -- 교육 문제 (ADR-009). 볼트에는 쓰지 않는다
+  id               INTEGER PRIMARY KEY,
+  kind             TEXT NOT NULL,   -- note | review | weekly
+  key              TEXT NOT NULL UNIQUE, -- 'note:<노트 경로>', 'review:2026-11-05', 'week:2026-W45'
+  payload          TEXT NOT NULL,   -- QuizQuestion JSON 목록
+  created_at       TEXT NOT NULL
+);
+
+CREATE TABLE quiz_answers (         -- Zero가 처음 고른 답만
+  quiz_id          INTEGER NOT NULL REFERENCES quizzes(id),
+  number           INTEGER NOT NULL,
+  choice           TEXT NOT NULL,   -- A | B | C | D
+  correct          INTEGER NOT NULL,
+  answered_at      TEXT NOT NULL,
+  PRIMARY KEY (quiz_id, number)
 );
 
 CREATE TABLE bot_state (            -- 사용량 한도 정지 등 봇 전체 상태 (ADR-007)
@@ -1007,7 +1027,7 @@ Zero가 회사 재정의 1~5단계([docs/회사/](회사/README.md))에서 정�
 | 5 | 채팅과 기능 개발 흐름: 제품 채팅 채널과 대화, `/task`·`/debate`·`/idea` 입력, 파이프라인 YAML 로더와 규칙 검사(R1~R5, `when`), 기능 개발을 `pipelines/feature.yaml`로 이전(PLANNING, 화면 디자인, Alpha 설계·구현, Delta 검증), Claude 디자인 확인(V14), 흐름별 예산, 볼트·DOC_SYNC | 구현 (2026-10-28, `feat/0-company-system`). 파이프라인은 YAML이 없으면 코드의 기본 선언을 쓴다. 볼트가 git이면 봇이 쓴 파일만 커밋(push 없음). V14는 화면 디자인 결과에 `design_url`을 받는 데까지 |
 | 6 | 버그 수정·출시 흐름(진단, 수정 방향 승인, 출시 준비)과 가게씨 안정화·첫 출시 준비 | 흐름 구현 (2026-10-28, `feat/0-company-system`). 가게씨 적용은 시뮬레이터 설치(V9) 뒤 |
 | 7 | 정기 테스트(제품별 일정, 실패 진단·보고), 아이디어 관리 화면, 제이데이·오롯 적용 | 정기 테스트·아이디어 화면 구현 (2026-10-28, `feat/0-company-system`). 제이데이·오롯 적용, 같은 실패 묶기는 남음 |
-| 8 | 교육·비서 부서: 회사 재정의 1~5단계를 두 부서에 대해 다시 하고 구현 | 미시작 |
+| 8 | 교육·비서 부서: 회사 재정의 1~5단계를 두 부서에 대해 다시 하고 구현 | 교육 Daily·주간 보고·주간 문제 구현 (ADR-009), 비서 미시작 |
 
 - 2026-10-26판 계획의 Phase 6(입력·일정: 접수 명령, Jenkins·SSH, Slack 어댑터)은 ADR-007로 대부분 빠지고, 대기열과 일정만 Phase 4로 옮겼다
 - 빌드 락(테스트 전역 락)과 `/ping`은 Phase 1~2에서 구현했다
