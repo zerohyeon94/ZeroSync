@@ -37,7 +37,7 @@ class ConceptNote(BaseModel):
     body: Annotated[str, StringConstraints(strip_whitespace=True, min_length=200, max_length=20000)]
     # 이 노트로 푸는 문제. 볼트에 쓰지 않고 Discord에 올린다
     questions: list[QuizQuestion] = Field(min_length=NOTE_QUESTIONS, max_length=NOTE_QUESTIONS)
-    # 사실을 확인한 공식 문서·표준·신뢰할 수 있는 자료. #교육 알림에 붙는다
+    # 사실을 확인한 공식 문서·표준·위키백과 같은 신뢰할 수 있는 자료. #교육 알림에 붙는다
     sources: list[Url] = Field(min_length=1, max_length=8)
     # 확인하지 못해 노트에 "확인하지 못함"으로 적은 것
     unverified: list[Annotated[str, StringConstraints(max_length=200)]] = Field(
