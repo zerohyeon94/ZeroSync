@@ -5,6 +5,7 @@
 """
 
 import re
+from dataclasses import dataclass
 
 SECTIONS = (
     "## 한 문장으로",
@@ -44,14 +45,38 @@ def check_note(body: str) -> list[str]:
     return problems
 
 
-def _check_questions(text: str) -> list[str]:
+@dataclass(frozen=True)
+class Question:
+    """확인 문제 하나. 복습에 그대로 옮긴다."""
+
+    number: int
+    prompt: str  # `### N.` 뒤의 문제 문장
+    body: str  # 보기와 접힌 정답 callout
+
+
+def _question_parts(text: str) -> list[str]:
     start = text.find("## 확인 문제")
     if start < 0:
         return []
     rest = text[start:].split("\n", 1)[1] if "\n" in text[start:] else ""
     end = rest.find("\n## ")
     block = rest if end < 0 else rest[:end]
-    parts = re.split(r"^### ", block, flags=re.MULTILINE)[1:]
+    return re.split(r"^### ", block, flags=re.MULTILINE)[1:]
+
+
+def parse_questions(text: str) -> list[Question]:
+    found = []
+    for number, part in enumerate(_question_parts(text), start=1):
+        head, _, body = part.partition("\n")
+        prompt = re.sub(r"^\d+\.\s*", "", head).strip()
+        found.append(Question(number, prompt, body.strip()))
+    return found
+
+
+def _check_questions(text: str) -> list[str]:
+    if "## 확인 문제" not in text:
+        return []
+    parts = _question_parts(text)
     if len(parts) != QUESTIONS:
         return [f"확인 문제는 {QUESTIONS}개다 (지금 {len(parts)}개)"]
     problems = []

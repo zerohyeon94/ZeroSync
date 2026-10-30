@@ -5,7 +5,7 @@
 
 import asyncio
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -13,6 +13,7 @@ from bot.clock import FixedClock
 from bot.education.daily import (
     DailyError,
     Month,
+    NoteFile,
     QueueItem,
     TodayItem,
     note_target,
@@ -20,11 +21,12 @@ from bot.education.daily import (
     parse_month,
     parse_queue,
     parse_today,
+    pick_review,
     plan_daily,
     render_daily,
     update_queue,
 )
-from bot.education.note import check_note
+from bot.education.note import check_note, parse_questions
 from bot.schemas import ConceptNote
 from bot.workflow.education import EducationDesk
 
@@ -216,6 +218,44 @@ def test_optional_item_follows_certificate_month_or_section():
     assert optional_for(sqld, "서버") == "SQLD 기출·요약 10~15분"
 
 
+def _note(day, name):
+    return NoteFile(day, f"Learning/개념/{day.isoformat()} {name}", BODY)
+
+
+def test_review_takes_latest_note_at_least_three_or_seven_days_old():
+    notes = [
+        _note(date(2026, 11, 1), "가"),
+        _note(date(2026, 11, 4), "나"),
+        _note(date(2026, 11, 6), "다"),
+        _note(date(2026, 11, 7), "라"),
+    ]
+    day = date(2026, 11, 9)  # 3일 전 이하 최근: 11-06 다, 7일 전 이하 최근: 11-01 가
+    review = pick_review(day, notes, "")
+    assert review.label in ("다", "가")
+    assert review.days_ago == (day - date(2026, 11, 6 if review.label == "다" else 1)).days
+    labels = {pick_review(date(2026, 11, 9) + timedelta(days=d), notes, "").label for d in (0, 1)}
+    assert len(labels) == 2  # 날마다 돌려 가며 고른다
+
+
+def test_review_skips_todays_note_and_young_notes():
+    notes = [_note(date(2026, 11, 1), "가"), _note(date(2026, 11, 3), "나")]
+    assert pick_review(date(2026, 11, 3), notes, "") is None  # 3일 지난 노트가 없다
+    only = pick_review(date(2026, 11, 4), notes, "Learning/개념/2026-11-01 가")
+    assert only is None
+
+
+def test_review_question_rotates_by_day():
+    notes = [_note(date(2026, 11, 1), "가")]
+    numbers = {pick_review(date(2026, 11, d), notes, "").question.number for d in (4, 5, 6)}
+    assert numbers == {1, 2, 3}
+
+
+def test_parse_questions_splits_prompt_and_body():
+    questions = parse_questions(BODY)
+    assert [q.prompt for q in questions] == ["개념", "흐름", "실패"]
+    assert questions[1].body.startswith("- [ ] A. 하나") and "> - 정답: B" in questions[1].body
+
+
 # 쓰기
 
 
@@ -231,6 +271,19 @@ def test_render_daily_matches_template():
         "## 여유 있으면\n\n"
         "- [ ] 플랫폼 지도: 칸\n"
     )
+
+
+def test_render_daily_puts_review_between_today_and_optional():
+    plan = plan_daily(date(2026, 11, 5), None, parse_queue(QUEUE), NOV, 0)
+    review = pick_review(date(2026, 11, 5), [_note(date(2026, 11, 1), "가")], plan.target)
+    text = render_daily(plan, "g", "선택", review)
+    today, rest = text.split("## 복습\n\n")
+    assert "## 오늘 할 것" in today
+    assert rest.startswith(
+        f"> [[Learning/개념/2026-11-01 가|가]] {review.question.number}번 · 4일 전 개념 · 2분\n\n"
+        f"**{review.question.prompt}**\n\n- [ ] A. 하나"
+    )
+    assert rest.index("> [!answer]-") < rest.index("## 여유 있으면")
 
 
 def test_update_queue_marks_done_and_links_today_only():
@@ -417,3 +470,18 @@ def test_first_day_of_month_reports_last_month_facts(tmp_path):
     assert "**2026-10 월말 확인**" in text and "완료한 개념: 1개" in text
     assert "완료 기준: 1 / 2" in text and "- [x] 운영 방식을 정했다" in text
     assert "오늘 할 것" in text
+
+
+def test_daily_includes_review_from_older_note(tmp_path):
+    root = make_vault(tmp_path)
+    run_desk(root, date(2026, 11, 2), FakeEngine(NOTE))
+    for day in (2, 3, 4):  # 11-04 노트는 끝내지 않아 11-05에 이어 한다
+        path = root / f"Daily/2026-11/2026-11-0{day}.md"
+        if day < 4:
+            path.write_text(path.read_text("utf-8").replace("- [ ] [[", "- [x] [["), "utf-8")
+        run_desk(root, date(2026, 11, day + 1), FakeEngine(NOTE))
+    daily = (root / "Daily/2026-11/2026-11-05.md").read_text("utf-8")
+    assert "## 복습" in daily and "엣지-중앙 서버 구조|엣지-중앙 서버 구조]]" in daily
+    assert "3일 전 개념" in daily
+    early = (root / "Daily/2026-11/2026-11-03.md").read_text("utf-8")
+    assert "## 복습" not in early

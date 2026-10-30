@@ -18,16 +18,19 @@ from bot.education.daily import (
     QUEUE_FILE,
     DailyError,
     DailyPlan,
+    Review,
     count_done,
     daily_files,
     daily_path,
     goals_file,
     month_criteria,
+    note_files,
     note_header,
     optional_for,
     parse_month,
     parse_queue,
     parse_today,
+    pick_review,
     plan_daily,
     render_daily,
     section_of,
@@ -110,7 +113,8 @@ class EducationDesk:
             sources, unverified = answer.sources, answer.unverified
         optional = optional_for(month, section_of(queue, plan))
         goals_link = str(goals.relative_to(root).with_suffix(""))
-        _write(path, render_daily(plan, goals_link, optional))
+        review = pick_review(today, note_files(root, today), plan.target)
+        _write(path, render_daily(plan, goals_link, optional, review))
         written.append(str(path.relative_to(root)))
         updated = update_queue(queue_text, plan)
         if updated != queue_text:
@@ -120,7 +124,7 @@ class EducationDesk:
             await self._vault.commit(
                 root, written, f"docs(daily): {today.isoformat()} {plan.label}", COMMIT_TRAILER
             )
-        return DailyResult(True, _announce(plan, optional, sources, unverified))
+        return DailyResult(True, _announce(plan, optional, review, sources, unverified))
 
     async def _write_note(self, plan: DailyPlan) -> ConceptNote | None:
         item = plan.item
@@ -173,11 +177,23 @@ class EducationDesk:
         return "\n".join(lines)
 
 
-def _announce(plan: DailyPlan, optional: str, sources: list[str], unverified: list[str]) -> str:
+def _announce(
+    plan: DailyPlan,
+    optional: str,
+    review: Review | None,
+    sources: list[str],
+    unverified: list[str],
+) -> str:
     kind = "어제 것 이어서" if plan.carried else "새 개념"
     lines = [
         f"**오늘 할 것** ({plan.day:%m-%d}, {kind}): {plan.label} — 20~30분",
         f"- 이번 달 {plan.month.topic} · 완료 {plan.done_this_month}개",
+    ]
+    if review is not None:
+        lines.append(
+            f"- 복습: {review.label} {review.question.number}번 ({review.days_ago}일 전 개념)"
+        )
+    lines += [
         f"- 여유 있으면: {optional}",
         f"- Daily: `{plan.daily_path}`",
     ]

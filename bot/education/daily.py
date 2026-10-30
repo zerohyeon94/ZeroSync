@@ -7,8 +7,10 @@
 
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
+
+from bot.education.note import Question, parse_questions
 
 DAILY_DIR = "Daily"
 NOTE_DIR = "Learning/개념"
@@ -16,10 +18,14 @@ QUEUE_FILE = "Schedule/학습 대기열.md"
 GOALS_GLOB = "Schedule/월별 목표*.md"
 TODAY_HEADING = "## 오늘 할 것"
 OPTIONAL_HEADING = "## 여유 있으면"
+REVIEW_HEADING = "## 복습"
+# 복습할 노트: 이 날수 이상 지난 노트 중 가장 최근 것 (간격 두고 다시 꺼내 보기)
+REVIEW_DAYS = (3, 7)
 NOTE_MINUTES = "20~30분"
 WEEKDAYS = "월화수목금토일"
 
 _DAILY_NAME = re.compile(r"^(\d{4})-(\d{2})-(\d{2})\.md$")
+_NOTE_NAME = re.compile(r"^(\d{4})-(\d{2})-(\d{2}) (.+)\.md$")
 _CHECK = re.compile(r"^- \[([ xX])\] (.*)$")
 _LINK = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
 _QUEUE_LINK = re.compile(r"\s*→\s*\[\[[^\]]+\]\]\s*$")
@@ -59,6 +65,27 @@ class Month:
     key: str  # 2026-11
     topic: str  # 괄호 설명을 뺀 주제
     certificate: str  # 자격증 칸. 없으면 ""
+
+
+@dataclass(frozen=True)
+class NoteFile:
+    day: date  # 파일 이름의 날짜 (노트를 만든 날)
+    target: str  # Learning/개념/2026-11-01 주제
+    text: str
+
+    @property
+    def label(self) -> str:
+        return self.target.rsplit("/", 1)[-1][len("YYYY-MM-DD ") :]
+
+
+@dataclass(frozen=True)
+class Review:
+    """Daily에 넣는 복습 1문제. 이월하지 않는다."""
+
+    target: str
+    label: str
+    days_ago: int
+    question: Question
 
 
 @dataclass(frozen=True)
@@ -241,6 +268,26 @@ def optional_for(month: Month, section: str) -> str:
     return "플랫폼 지도: 오늘 개념과 관련된 구성 요소 칸 하나 채우기 (5분)"
 
 
+def pick_review(day: date, notes: list[NoteFile], exclude: str) -> Review | None:
+    """3일·7일 이상 지난 노트 중 가장 최근 것에서 확인 문제 하나를 고른다.
+
+    노트와 문제는 날짜로 돌려 가며 고른다. 오늘 할 노트(exclude)는 고르지 않는다.
+    """
+    chosen: list[NoteFile] = []
+    for gap in REVIEW_DAYS:
+        older = [n for n in notes if n.day <= day - timedelta(days=gap) and n.target != exclude]
+        if older and older[-1] not in chosen:
+            chosen.append(older[-1])
+    if not chosen:
+        return None
+    note = chosen[day.toordinal() % len(chosen)]
+    questions = parse_questions(note.text)
+    if not questions:
+        return None
+    question = questions[day.toordinal() % len(questions)]
+    return Review(note.target, note.label, (day - note.day).days, question)
+
+
 def section_of(queue: list[QueueItem], plan: DailyPlan) -> str:
     if plan.item is not None:
         return plan.item.section
@@ -253,7 +300,9 @@ def section_of(queue: list[QueueItem], plan: DailyPlan) -> str:
 # 쓰기
 
 
-def render_daily(plan: DailyPlan, goals_link: str, optional: str) -> str:
+def render_daily(
+    plan: DailyPlan, goals_link: str, optional: str, review: Review | None = None
+) -> str:
     weekday = WEEKDAYS[plan.day.weekday()]
     lines = [
         f"# {plan.day.isoformat()} ({weekday})",
@@ -264,6 +313,19 @@ def render_daily(plan: DailyPlan, goals_link: str, optional: str) -> str:
         "",
         f"- [ ] [[{plan.target}|{plan.label}]] — {NOTE_MINUTES}",
     ]
+    if review is not None:
+        question = review.question
+        lines += [
+            "",
+            REVIEW_HEADING,
+            "",
+            f"> [[{review.target}|{review.label}]] {question.number}번 · "
+            f"{review.days_ago}일 전 개념 · 2분",
+            "",
+            f"**{question.prompt}**",
+            "",
+            question.body,
+        ]
     if optional.strip():
         lines += ["", OPTIONAL_HEADING, "", f"- [ ] {optional.strip()}"]
     return "\n".join(lines) + "\n"
@@ -299,6 +361,20 @@ def goals_file(root: Path) -> Path:
     if not found:
         raise DailyError("Schedule에 월별 목표 파일이 없다")
     return found[-1]
+
+
+def note_files(root: Path, before: date) -> list[NoteFile]:
+    """`Learning/개념/YYYY-MM-DD 주제.md` 중 before보다 앞선 날짜, 날짜 순."""
+    found = []
+    for path in (root / NOTE_DIR).glob("*.md"):
+        match = _NOTE_NAME.match(path.name)
+        if match is None:
+            continue
+        day = date(*(int(part) for part in match.groups()[:3]))
+        if day < before:
+            target = f"{NOTE_DIR}/{path.stem}"
+            found.append(NoteFile(day, target, path.read_text(encoding="utf-8")))
+    return sorted(found, key=lambda n: (n.day, n.target))
 
 
 def daily_files(root: Path, before: date) -> list[tuple[date, Path]]:
