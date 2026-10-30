@@ -1,11 +1,9 @@
 """개념 노트 형식 검사 (볼트 Templates/개념 노트.md, AGENTS.md "개념 노트 작성 기준").
 
-교육팀장이 쓴 본문이 템플릿 섹션 순서와 확인 문제 형식을 지키는지 본다. 내용의 사실 여부는
-판단하지 않는다(봇은 해석하지 않는다). 문제가 있으면 목록을 돌려주고, 엔진이 1회 다시 요청한다.
+교육팀장이 쓴 본문이 템플릿 섹션 순서를 지키는지 본다. 노트에는 학습 내용만 두고,
+문제는 JSON의 questions로 받아 Discord에 올린다. 내용의 사실 여부는 판단하지 않는다
+(봇은 해석하지 않는다). 문제가 있으면 목록을 돌려주고, 엔진이 1회 다시 요청한다.
 """
-
-import re
-from dataclasses import dataclass
 
 SECTIONS = (
     "## 한 문장으로",
@@ -14,11 +12,7 @@ SECTIONS = (
     "## 어디서 깨지나",
     "## 이런 시스템에서는",
     "## 단어 정리",
-    "## 확인 문제",
 )
-QUESTIONS = 3
-OPTIONS = ("A.", "B.", "C.", "D.")
-ANSWER = "> [!answer]-"
 # 볼트에서 git에 올라가지 않는 회사 폴더. 노트에 경로조차 남기지 않는다
 PRIVATE = "회사/"
 
@@ -38,56 +32,11 @@ def check_note(body: str) -> list[str]:
             problems.append(f"섹션 순서는 {' → '.join(s[3:] for s in SECTIONS)}이다")
     extra = [h for h in headings if h not in SECTIONS]
     if extra:
-        problems.append(f"템플릿에 없는 섹션: {', '.join(extra)}")
-    problems += _check_questions(text)
+        problems.append(
+            f"템플릿에 없는 섹션: {', '.join(extra)} (문제는 본문이 아니라 questions에 쓴다)"
+        )
     if PRIVATE in text:
         problems.append("회사 폴더(회사/)의 경로나 내용을 쓰지 않는다")
-    return problems
-
-
-@dataclass(frozen=True)
-class Question:
-    """확인 문제 하나. 복습에 그대로 옮긴다."""
-
-    number: int
-    prompt: str  # `### N.` 뒤의 문제 문장
-    body: str  # 보기와 접힌 정답 callout
-
-
-def _question_parts(text: str) -> list[str]:
-    start = text.find("## 확인 문제")
-    if start < 0:
-        return []
-    rest = text[start:].split("\n", 1)[1] if "\n" in text[start:] else ""
-    end = rest.find("\n## ")
-    block = rest if end < 0 else rest[:end]
-    return re.split(r"^### ", block, flags=re.MULTILINE)[1:]
-
-
-def parse_questions(text: str) -> list[Question]:
-    found = []
-    for number, part in enumerate(_question_parts(text), start=1):
-        head, _, body = part.partition("\n")
-        prompt = re.sub(r"^\d+\.\s*", "", head).strip()
-        found.append(Question(number, prompt, body.strip()))
-    return found
-
-
-def _check_questions(text: str) -> list[str]:
-    if "## 확인 문제" not in text:
-        return []
-    parts = _question_parts(text)
-    if len(parts) != QUESTIONS:
-        return [f"확인 문제는 {QUESTIONS}개다 (지금 {len(parts)}개)"]
-    problems = []
-    for number, part in enumerate(parts, start=1):
-        lines = [line.strip() for line in part.splitlines()]
-        options = [line for line in lines if line.startswith("- [ ] ")]
-        labels = tuple(line[6:].split(" ", 1)[0] for line in options)
-        if labels != OPTIONS:
-            problems.append(f"{number}번 문제는 '- [ ] A.' ~ '- [ ] D.' 4지선다다")
-        if not any(line.startswith(ANSWER) for line in lines):
-            problems.append(f"{number}번 문제에 접힌 정답 callout({ANSWER} 정답과 해설)이 없다")
     return problems
 
 

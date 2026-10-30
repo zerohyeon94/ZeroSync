@@ -4,7 +4,8 @@
 볼트에 파일을 쓰고 커밋하는 주체는 봇이다. 체크박스는 Zero만 체크한다.
 매달 1일에는 지난달 사실(완료 개수, 완료 기준)을 함께 알린다. 다음 달 주제는 Zero가 정한다.
 주간 보고의 숫자는 bot.education.weekly가 세고, 교육팀장은 주간 문제와 한마디만 쓴다.
-문제는 Discord 버튼으로 풀고, 처음 고른 답만 DB에 남겨 다음 주 보고에 넣는다.
+볼트(Daily, 개념 노트)에는 학습 내용만 둔다. 문제(개념 노트 3문제, 복습 1문제, 주간 문제)는
+DB에 두고 Discord에 버튼으로 올린다. 처음 고른 답만 남겨 주간 보고에 넣는다.
 """
 
 import json
@@ -21,13 +22,12 @@ from bot.education.daily import (
     QUEUE_FILE,
     DailyError,
     DailyPlan,
-    Review,
+    NoteQuiz,
     count_done,
     daily_files,
     daily_path,
     goals_file,
     month_criteria,
-    note_files,
     note_header,
     optional_for,
     parse_month,
@@ -40,11 +40,10 @@ from bot.education.daily import (
     update_queue,
 )
 from bot.education.note import check_note, complete_note
+from bot.education.quiz import answer_text, check_questions
 from bot.education.weekly import (
     QuizScore,
     WeekFacts,
-    answer_text,
-    check_review,
     render_weekly,
     week_facts,
     week_key,
@@ -59,14 +58,24 @@ SCOPE = "education"  # 실행 기록의 project 값
 COMMIT_TRAILER = "ZeroSync-Department: education"
 
 Notify = Callable[[str, bool], Awaitable[None]]
-# 주간 문제를 버튼과 함께 게시한다 (quiz_id, 문제). Discord 계층이 맡는다
-PostQuiz = Callable[[int, list[QuizQuestion]], Awaitable[None]]
+# 문제를 버튼과 함께 게시한다 (quiz_id, 제목, [(번호, 문제)], 전체 문제 수). Discord 계층이 맡는다
+PostQuiz = Callable[[int, str, list[tuple[int, QuizQuestion]], int], Awaitable[None]]
+NOTE_KEY, REVIEW_KEY, WEEK_KEY = "note:", "review:", "week:"
+
+
+@dataclass(frozen=True)
+class QuizPost:
+    quiz_id: int
+    title: str
+    items: list[tuple[int, QuizQuestion]]
+    total: int
 
 
 @dataclass(frozen=True)
 class DailyResult:
     created: bool
     text: str  # #교육에 올린 안내
+    posts: tuple[QuizPost, ...] = ()
 
 
 class EducationDesk:
@@ -104,7 +113,8 @@ class EducationDesk:
             result = DailyResult(False, f"오늘 Daily를 만들지 못했다: {error}")
         text = "\n\n".join([*notes, result.text])
         await self._notify(text, not result.created or bool(notes))
-        return DailyResult(result.created, text)
+        await self._post(result.posts)
+        return DailyResult(result.created, text, result.posts)
 
     async def _daily(self, today: date) -> DailyResult:
         root = self._root
@@ -124,6 +134,7 @@ class EducationDesk:
         note = root / plan.note_path
         sources: list[str] = []
         unverified: list[str] = []
+        new_questions: list[QuizQuestion] = []
         if not note.exists():
             answer = await self._write_note(plan)
             if answer is None:
@@ -131,10 +142,10 @@ class EducationDesk:
             _write(note, complete_note(note_header(plan), answer.body))
             written.append(plan.note_path)
             sources, unverified = answer.sources, answer.unverified
+            new_questions = list(answer.questions)
         optional = optional_for(month, section_of(queue, plan))
         goals_link = str(goals.relative_to(root).with_suffix(""))
-        review = pick_review(today, note_files(root, today), plan.target)
-        _write(path, render_daily(plan, goals_link, optional, review))
+        _write(path, render_daily(plan, goals_link, optional))
         written.append(str(path.relative_to(root)))
         updated = update_queue(queue_text, plan)
         if updated != queue_text:
@@ -144,14 +155,56 @@ class EducationDesk:
             await self._vault.commit(
                 root, written, f"docs(daily): {today.isoformat()} {plan.label}", COMMIT_TRAILER
             )
-        return DailyResult(True, _announce(plan, optional, review, sources, unverified))
+        posts = await self._daily_quizzes(today, plan, new_questions)
+        return DailyResult(True, _announce(plan, optional, posts, sources, unverified), posts)
+
+    async def _daily_quizzes(
+        self, today: date, plan: DailyPlan, new_questions: list[QuizQuestion]
+    ) -> tuple[QuizPost, ...]:
+        """오늘 노트의 문제(새 노트면 저장, 이어 하면 아직 안 푼 것)와 복습 1문제."""
+        repo = self._repo
+        if repo is None:
+            return ()
+        posts = []
+        key = NOTE_KEY + plan.target
+        if new_questions and await repo.quiz_by_key(key) is None:
+            await repo.add_quiz("note", key, _payload(new_questions))
+        quiz_id = await repo.quiz_by_key(key)
+        if quiz_id is not None:
+            questions = await self._load(quiz_id)
+            done = await repo.answered_numbers(quiz_id)
+            items = [(n, q) for n, q in enumerate(questions, start=1) if n not in done]
+            title = "오늘 문제" if new_questions else "이어 하는 문제"
+            if items:
+                posts.append(QuizPost(quiz_id, title, items, len(questions)))
+        notes = [
+            NoteQuiz(stored_key[len(NOTE_KEY) :], _questions(payload))
+            for _, stored_key, payload in await repo.list_quizzes("note")
+        ]
+        review = pick_review(today, notes, plan.target)
+        review_key = REVIEW_KEY + today.isoformat()
+        if review is not None and await repo.quiz_by_key(review_key) is None:
+            review_id = await repo.add_quiz("review", review_key, _payload([review.question]))
+            title = f"복습 ({review.days_ago}일 전 · {review.label})"
+            posts.append(QuizPost(review_id, title, [(1, review.question)], 1))
+        return tuple(posts)
+
+    async def _post(self, posts: tuple[QuizPost, ...]) -> None:
+        if self._post_quiz is None:
+            return
+        for post in posts:
+            await self._post_quiz(post.quiz_id, post.title, post.items, post.total)
+
+    async def _load(self, quiz_id: int) -> list[QuizQuestion]:
+        stored = await self._repo.get_quiz(quiz_id)
+        return _questions(stored[1]) if stored is not None else []
 
     async def _write_note(self, plan: DailyPlan) -> ConceptNote | None:
         item = plan.item
         assert item is not None or plan.carried
 
         async def verify(note: ConceptNote) -> list[str]:
-            return check_note(note.body)
+            return check_note(note.body) + check_questions(note.questions)
 
         answer = await self._engine.ask_outside_task(
             SCOPE,
@@ -184,60 +237,76 @@ class EducationDesk:
         queue_path = root / QUEUE_FILE
         queue = parse_queue(_read(queue_path)) if queue_path.exists() else []
         facts = week_facts(today, dailies, queue)
-        last = await self._score(week_key(today - timedelta(days=7)))
-        week = week_key(today)
+        last = await self._score(WEEK_KEY + week_key(today - timedelta(days=7)))
+        daily = await self._daily_score(start, today)
+        week = WEEK_KEY + week_key(today)
         review: WeeklyReview | None = None
         tail = ""
-        if self._repo is not None and await self._repo.quiz_for_week(week) is not None:
+        if self._repo is not None and await self._repo.quiz_by_key(week) is not None:
             tail = "이번 주 문제는 이미 냈다."
         elif facts.concepts:
-            review = await self._write_review(facts, last)
+            review = await self._write_review(facts, last, daily)
             if review is None:
                 tail = f"{self._display}가 주간 문제를 만들지 못했다."
-        text = render_weekly(facts, last, review.comment if review else [], self._display)
+        comment = review.comment if review else []
+        text = render_weekly(facts, last, comment, self._display, daily=daily)
         if tail:
             text += f"\n\n{tail}"
         await self._notify(text, tail.endswith("못했다."))
         if review is not None and self._repo is not None:
-            payload = json.dumps([q.model_dump() for q in review.questions], ensure_ascii=False)
-            quiz_id = await self._repo.add_quiz(week, payload)
-            if self._post_quiz is not None:
-                await self._post_quiz(quiz_id, list(review.questions))
+            questions = list(review.questions)
+            quiz_id = await self._repo.add_quiz("weekly", week, _payload(questions))
+            items = list(enumerate(questions, start=1))
+            await self._post((QuizPost(quiz_id, "주간 문제", items, len(questions)),))
         return text
 
     async def answer(self, quiz_id: int, number: int, choice: str) -> str:
         """Zero가 누른 버튼. 결과와 해설을 돌려준다 (Zero에게만 보인다)."""
         assert self._repo is not None
-        stored = await self._repo.get_quiz(quiz_id)
-        questions = _questions(stored[1]) if stored is not None else []
+        questions = await self._load(quiz_id)
         if not 1 <= number <= len(questions):
             return "없는 문제다."
         question = questions[number - 1]
         first = await self._repo.record_quiz_answer(
             quiz_id, number, choice, choice == question.answer
         )
-        answered, correct = await self._repo.quiz_score(quiz_id)
-        return (
-            f"{answer_text(question, choice, first)}\n"
-            f"-# 이번 주 {len(questions)}문제 중 {answered}개 풂, {correct}개 맞힘"
-        )
+        text = answer_text(question, choice, first)
+        if len(questions) > 1:
+            answered, correct = await self._repo.quiz_score(quiz_id)
+            text += f"\n-# {len(questions)}문제 중 {answered}개 풂, {correct}개 맞힘"
+        return text
 
-    async def _score(self, week: str) -> QuizScore | None:
+    async def _score(self, key: str) -> QuizScore | None:
         if self._repo is None:
             return None
-        quiz_id = await self._repo.quiz_for_week(week)
+        quiz_id = await self._repo.quiz_by_key(key)
         if quiz_id is None:
             return None
-        stored = await self._repo.get_quiz(quiz_id)
-        total = len(_questions(stored[1])) if stored is not None else 0
         answered, correct = await self._repo.quiz_score(quiz_id)
-        return QuizScore(total, answered, correct)
+        return QuizScore(len(await self._load(quiz_id)), answered, correct)
 
-    async def _write_review(self, facts: WeekFacts, last: QuizScore | None) -> WeeklyReview | None:
-        summary = render_weekly(facts, last, [], self._display)
+    async def _daily_score(self, start: date, end: date) -> QuizScore | None:
+        """이번 주에 올린 개념 노트 문제와 복습 문제를 합친 점수."""
+        if self._repo is None:
+            return None
+        total = answered = correct = 0
+        for kind, prefix in (("note", NOTE_KEY), ("review", REVIEW_KEY)):
+            for quiz_id, key, payload in await self._repo.list_quizzes(kind):
+                made = _key_day(key[len(prefix) :])
+                if made is None or not start <= made <= end:
+                    continue
+                total += len(_questions(payload))
+                done, ok = await self._repo.quiz_score(quiz_id)
+                answered, correct = answered + done, correct + ok
+        return QuizScore(total, answered, correct) if total else None
+
+    async def _write_review(
+        self, facts: WeekFacts, last: QuizScore | None, daily: QuizScore | None
+    ) -> WeeklyReview | None:
+        summary = render_weekly(facts, last, [], self._display, daily=daily)
 
         async def verify(review: WeeklyReview) -> list[str]:
-            return check_review(review)
+            return check_questions(review.questions, review.comment)
 
         answer = await self._engine.ask_outside_task(
             SCOPE,
@@ -281,7 +350,7 @@ class EducationDesk:
 def _announce(
     plan: DailyPlan,
     optional: str,
-    review: Review | None,
+    posts: tuple[QuizPost, ...],
     sources: list[str],
     unverified: list[str],
 ) -> str:
@@ -289,20 +358,30 @@ def _announce(
     lines = [
         f"**오늘 할 것** ({plan.day:%m-%d}, {kind}): {plan.label} — 20~30분",
         f"- 이번 달 {plan.month.topic} · 완료 {plan.done_this_month}개",
-    ]
-    if review is not None:
-        lines.append(
-            f"- 복습: {review.label} {review.question.number}번 ({review.days_ago}일 전 개념)"
-        )
-    lines += [
         f"- 여유 있으면: {optional}",
         f"- Daily: `{plan.daily_path}`",
     ]
+    if posts:
+        parts = [f"{post.title.split(' (')[0]} {len(post.items)}개" for post in posts]
+        lines.append(f"- 문제: {', '.join(parts)}. 노트를 읽고 아래 버튼으로 푼다")
     if sources:
         lines.append("- 확인한 자료: " + ", ".join(f"<{url}>" for url in sources))
     if unverified:
         lines.append("- 확인하지 못함: " + "; ".join(unverified))
     return "\n".join(lines)
+
+
+def _payload(questions: list[QuizQuestion]) -> str:
+    return json.dumps([q.model_dump() for q in questions], ensure_ascii=False)
+
+
+def _key_day(text: str) -> date | None:
+    """`2026-11-02` 또는 `Learning/개념/2026-11-02 주제`의 날짜."""
+    name = text.rsplit("/", 1)[-1][:10]
+    try:
+        return date.fromisoformat(name)
+    except ValueError:
+        return None
 
 
 def _questions(payload: str) -> list[QuizQuestion]:

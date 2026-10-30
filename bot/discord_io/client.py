@@ -28,7 +28,7 @@ from bot.discord_io.rules import (
     classify,
     command_error,
 )
-from bot.education.weekly import render_question
+from bot.education.quiz import render_question
 from bot.github import GitHubClient, VaultGit
 from bot.render.status import render_ping, render_status
 from bot.reports import Report, morning_report, weekly_report
@@ -291,12 +291,14 @@ class ZeroSyncBot(discord.Client):
         channel_id = int(education.channel_id)
         return self.get_channel(channel_id) or await self.fetch_channel(channel_id)
 
-    async def _post_quiz(self, quiz_id: int, questions: list[QuizQuestion]) -> None:
-        """주간 문제를 한 문제씩 A~D 버튼과 함께 올린다."""
+    async def _post_quiz(
+        self, quiz_id: int, title: str, items: list[tuple[int, QuizQuestion]], total: int
+    ) -> None:
+        """교육 문제(오늘·복습·주간)를 한 문제씩 A~D 버튼과 함께 올린다."""
         channel = await self._education_channel()
-        for number, question in enumerate(questions, start=1):
+        for number, question in items:
             await channel.send(
-                render_question(question, number, len(questions)),
+                render_question(question, title, number, total),
                 view=quiz_view(quiz_id, number),
                 allowed_mentions=discord.AllowedMentions.none(),
                 silent=True,
@@ -305,7 +307,7 @@ class ZeroSyncBot(discord.Client):
     async def answer_quiz(
         self, interaction: discord.Interaction, quiz_id: int, number: int, choice: str
     ) -> None:
-        """주간 문제 버튼. Zero만 답할 수 있고, 결과는 Zero에게만 보인다."""
+        """문제 버튼. Zero만 답할 수 있고, 결과는 Zero에게만 보인다."""
         if interaction.user.id != self.zero_user_id:
             await interaction.response.send_message("Zero의 문제다.", ephemeral=True)
             return

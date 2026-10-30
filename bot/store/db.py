@@ -144,14 +144,16 @@ CREATE TABLE ideas (
 );
 """
 
-# v7: 교육 주간 문제와 Zero의 답 (ADR-009). 처음 고른 답만 기록한다
+# v7: 교육 문제(개념 노트·복습·주간)와 Zero의 답 (ADR-009). 처음 고른 답만 기록한다
 _V7 = """
 CREATE TABLE quizzes (
   id               INTEGER PRIMARY KEY,
-  week             TEXT NOT NULL UNIQUE,
+  kind             TEXT NOT NULL,
+  key              TEXT NOT NULL UNIQUE,
   payload          TEXT NOT NULL,
   created_at       TEXT NOT NULL
 );
+CREATE INDEX quizzes_kind ON quizzes(kind, key);
 CREATE TABLE quiz_answers (
   quiz_id          INTEGER NOT NULL REFERENCES quizzes(id),
   number           INTEGER NOT NULL,

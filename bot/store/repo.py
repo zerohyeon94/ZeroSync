@@ -576,26 +576,37 @@ class Repository:
         rows = await self._fetchall(sql + " ORDER BY id", params)
         return [{k: row[k] for k in row.keys()} for row in rows]
 
-    # 교육 주간 문제 (ADR-009)
+    # 교육 문제 (ADR-009)
 
-    async def add_quiz(self, week: str, payload: str) -> int:
-        """주(2026-W45)마다 하나. 이미 있으면 IntegrityError."""
+    async def add_quiz(self, kind: str, key: str, payload: str) -> int:
+        """kind: note | review | weekly. key가 이미 있으면 IntegrityError."""
         async with self._transaction():
             cursor = await self._conn.execute(
-                "INSERT INTO quizzes (week, payload, created_at) VALUES (?, ?, ?)",
-                (week, payload, self._now()),
+                "INSERT INTO quizzes (kind, key, payload, created_at) VALUES (?, ?, ?, ?)",
+                (kind, key, payload, self._now()),
             )
         assert cursor.lastrowid is not None
         return cursor.lastrowid
 
     async def get_quiz(self, quiz_id: int) -> tuple[str, str] | None:
-        """(week, payload)."""
-        row = await self._fetchone("SELECT week, payload FROM quizzes WHERE id = ?", (quiz_id,))
-        return None if row is None else (str(row["week"]), str(row["payload"]))
+        """(key, payload)."""
+        row = await self._fetchone("SELECT key, payload FROM quizzes WHERE id = ?", (quiz_id,))
+        return None if row is None else (str(row["key"]), str(row["payload"]))
 
-    async def quiz_for_week(self, week: str) -> int | None:
-        row = await self._fetchone("SELECT id FROM quizzes WHERE week = ?", (week,))
+    async def quiz_by_key(self, key: str) -> int | None:
+        row = await self._fetchone("SELECT id FROM quizzes WHERE key = ?", (key,))
         return None if row is None else int(row["id"])
+
+    async def list_quizzes(self, kind: str) -> list[tuple[int, str, str]]:
+        """(id, key, payload), key 순."""
+        rows = await self._fetchall(
+            "SELECT id, key, payload FROM quizzes WHERE kind = ? ORDER BY key", (kind,)
+        )
+        return [(int(r["id"]), str(r["key"]), str(r["payload"])) for r in rows]
+
+    async def answered_numbers(self, quiz_id: int) -> set[int]:
+        rows = await self._fetchall("SELECT number FROM quiz_answers WHERE quiz_id = ?", (quiz_id,))
+        return {int(row["number"]) for row in rows}
 
     async def record_quiz_answer(
         self, quiz_id: int, number: int, choice: str, correct: bool

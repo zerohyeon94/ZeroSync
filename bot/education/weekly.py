@@ -8,8 +8,6 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 from bot.education.daily import QueueItem, parse_today
-from bot.education.note import PRIVATE
-from bot.schemas import LETTERS, QuizQuestion, WeeklyReview
 
 
 @dataclass(frozen=True)
@@ -80,7 +78,12 @@ def week_facts(day: date, dailies: list[tuple[date, str]], queue: list[QueueItem
 
 
 def render_weekly(
-    facts: WeekFacts, last_quiz: QuizScore | None, comment: list[str], display: str
+    facts: WeekFacts,
+    last_quiz: QuizScore | None,
+    comment: list[str],
+    display: str,
+    *,
+    daily: QuizScore | None = None,
 ) -> str:
     total_days = (facts.end - facts.start).days + 1
     lines = [
@@ -89,6 +92,11 @@ def render_weekly(
     ]
     if facts.month_total:
         lines.append(f"- {facts.month} 대기열: {facts.month_total}개 중 {facts.month_done}개 완료")
+    if daily is not None:
+        lines.append(
+            f"- 이번 주 Daily 문제(복습 포함): {daily.total}문제 중 {daily.answered}개 풂, "
+            f"{daily.correct}개 맞힘"
+        )
     if last_quiz is not None:
         if last_quiz.answered:
             lines.append(
@@ -106,36 +114,3 @@ def render_weekly(
     if comment:
         lines += ["", f"**{display}의 한마디**", *(f"- {line}" for line in comment)]
     return "\n".join(lines)
-
-
-def render_question(question: QuizQuestion, number: int, total: int) -> str:
-    options = [f"{letter}. {text}" for letter, text in zip(LETTERS, question.options, strict=True)]
-    return "\n".join([f"**주간 문제 {number}/{total}**", question.prompt, "", *options])
-
-
-def answer_text(question: QuizQuestion, chosen: str, first: str) -> str:
-    """버튼을 누른 Zero에게만 보이는 결과. 처음 고른 답만 점수에 남는다."""
-    if chosen != first:
-        head = f"이미 {first}를 골랐다 (정답 {question.answer}). 처음 고른 답만 기록한다."
-    elif first == question.answer:
-        head = f"정답이다 ({question.answer})."
-    else:
-        head = f"오답이다. 고른 답 {first}, 정답 {question.answer}."
-    return f"{head}\n{question.explanation}"
-
-
-def check_review(review: WeeklyReview) -> list[str]:
-    """주간 문제 형식. 내용의 사실 여부는 판단하지 않는다."""
-    problems = []
-    for number, question in enumerate(review.questions, start=1):
-        if len(set(question.options)) != len(question.options):
-            problems.append(f"{number}번 문제의 보기가 겹친다")
-        marks = {f"{letter}." for letter in LETTERS}
-        if any(option[:2] in marks for option in question.options):
-            problems.append(f"{number}번 문제의 보기에 'A.' 같은 머리표를 붙이지 않는다")
-    texts = [*review.comment]
-    for question in review.questions:
-        texts += [question.prompt, question.explanation, *question.options]
-    if any(PRIVATE in text for text in texts):
-        problems.append("회사 폴더(회사/)의 경로나 내용을 쓰지 않는다")
-    return problems

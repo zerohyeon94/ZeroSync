@@ -396,22 +396,26 @@ def test_bot_state_and_schedule_runs(tmp_path):
 def test_quiz_keeps_first_answer_and_scores(tmp_path):
     async def scenario():
         conn, repo = await open_repo(tmp_path / "zerosync.db")
-        quiz = await repo.add_quiz("2026-W45", "[]")
+        quiz = await repo.add_quiz("weekly", "week:2026-W45", "[]")
         with pytest.raises(sqlite3.IntegrityError):
-            await repo.add_quiz("2026-W45", "[]")
+            await repo.add_quiz("weekly", "week:2026-W45", "[]")
+        await repo.add_quiz("note", "note:Learning/개념/2026-11-02 가", "[1]")
         first = await repo.record_quiz_answer(quiz, 1, "B", True)
         again = await repo.record_quiz_answer(quiz, 1, "C", False)
         await repo.record_quiz_answer(quiz, 2, "A", False)
         found = (
             await repo.get_quiz(quiz),
-            await repo.quiz_for_week("2026-W45"),
-            await repo.quiz_for_week("2026-W44"),
+            await repo.quiz_by_key("week:2026-W45"),
+            await repo.quiz_by_key("week:2026-W44"),
             await repo.quiz_score(quiz),
+            await repo.answered_numbers(quiz),
+            await repo.list_quizzes("note"),
         )
         await conn.close()
         return first, again, found
 
-    first, again, (stored, week, missing, score) = run(scenario())
+    first, again, (stored, week, missing, score, numbers, notes) = run(scenario())
     assert (first, again) == ("B", "B")
-    assert stored == ("2026-W45", "[]") and week is not None and missing is None
-    assert score == (2, 1)
+    assert stored == ("week:2026-W45", "[]") and week is not None and missing is None
+    assert score == (2, 1) and numbers == {1, 2}
+    assert notes == [(2, "note:Learning/개념/2026-11-02 가", "[1]")]
