@@ -144,8 +144,16 @@ CREATE TABLE ideas (
 );
 """
 
-# v7: 교육 문제(개념 노트·복습·주간)와 Zero의 답 (ADR-009). 처음 고른 답만 기록한다
+# v7: 교육 학습 기록과 문제(개념 노트·복습·주간), Zero의 답 (ADR-009). 처음 고른 답만 기록한다
 _V7 = """
+CREATE TABLE study_days (
+  day              TEXT PRIMARY KEY,
+  target           TEXT NOT NULL,
+  label            TEXT NOT NULL,
+  carried          INTEGER NOT NULL,
+  done_at          TEXT,
+  created_at       TEXT NOT NULL
+);
 CREATE TABLE quizzes (
   id               INTEGER PRIMARY KEY,
   kind             TEXT NOT NULL,
