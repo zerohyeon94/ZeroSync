@@ -149,6 +149,10 @@ class DiscordChat:
     async def report(self, text: str, *, mention: bool = False) -> None:
         await self._send(await self._report_channel(), text, mention)
 
+    async def report_target(self) -> ChannelLike:
+        """#대표실(없으면 운영 채널). 교육 알림이 #교육 없이 쓸 곳이다."""
+        return await self._report_channel()
+
     async def send(self, channel: ChannelLike, text: str, *, mention: bool = False) -> None:
         """설정에 등록된 다른 채널(#교육 등)에 봇 이름으로 보낸다."""
         await self._send(channel, text, mention)

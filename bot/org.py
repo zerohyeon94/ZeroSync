@@ -34,6 +34,7 @@ READ_ONLY_STAGES = frozenset(
         Stage.DIAGNOSE,
         Stage.LEAD_CHECK,
         Stage.CONCEPT_NOTE,
+        Stage.WEEKLY_QUIZ,
     }
 )
 

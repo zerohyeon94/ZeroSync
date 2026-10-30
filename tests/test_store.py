@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 from datetime import UTC, datetime, timedelta
 
 import aiosqlite
@@ -80,7 +81,7 @@ def test_connect_creates_schema_and_file(tmp_path):
 
     version, tables, fk = run(scenario())
     assert path.exists()
-    assert version == SCHEMA_VERSION == 6
+    assert version == SCHEMA_VERSION == 7
     assert {"tasks", "events", "agent_runs"} <= tables
     assert fk == 1
 
@@ -387,3 +388,30 @@ def test_bot_state_and_schedule_runs(tmp_path):
     value, cleared, runs = run(scenario())
     assert (value, cleared) == ("2", None)
     assert runs == {"morning_report": "2026-10-29T00:00:00+00:00"}
+
+
+# 교육 주간 문제
+
+
+def test_quiz_keeps_first_answer_and_scores(tmp_path):
+    async def scenario():
+        conn, repo = await open_repo(tmp_path / "zerosync.db")
+        quiz = await repo.add_quiz("2026-W45", "[]")
+        with pytest.raises(sqlite3.IntegrityError):
+            await repo.add_quiz("2026-W45", "[]")
+        first = await repo.record_quiz_answer(quiz, 1, "B", True)
+        again = await repo.record_quiz_answer(quiz, 1, "C", False)
+        await repo.record_quiz_answer(quiz, 2, "A", False)
+        found = (
+            await repo.get_quiz(quiz),
+            await repo.quiz_for_week("2026-W45"),
+            await repo.quiz_for_week("2026-W44"),
+            await repo.quiz_score(quiz),
+        )
+        await conn.close()
+        return first, again, found
+
+    first, again, (stored, week, missing, score) = run(scenario())
+    assert (first, again) == ("B", "B")
+    assert stored == ("2026-W45", "[]") and week is not None and missing is None
+    assert score == (2, 1)

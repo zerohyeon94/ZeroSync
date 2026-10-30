@@ -53,6 +53,7 @@ class QueueItem:
     done: bool
     target: str | None  # 붙어 있는 개념 노트 링크
     section: str = ""  # 속한 `###` 구성 요소 (예: 장비 안)
+    month: str = ""  # 속한 `## YYYY-MM · 주제`의 달
 
     @property
     def title(self) -> str:
@@ -142,10 +143,12 @@ def parse_today(text: str) -> TodayItem | None:
 
 def parse_queue(text: str) -> list[QueueItem]:
     items = []
-    section = ""
+    section = month = ""
     for number, line in enumerate(text.splitlines()):
         if line.startswith("## "):
             section = ""
+            found = re.match(r"^## (\d{4}-\d{2})\b", line)
+            month = found.group(1) if found else ""
         elif line.startswith("### "):
             section = re.sub(r"^\d+\.\s*", "", line[4:]).strip()
         match = _CHECK.match(line.strip())
@@ -160,6 +163,7 @@ def parse_queue(text: str) -> list[QueueItem]:
                 done=match.group(1) != " ",
                 target=link.group(1).strip() if link else None,
                 section=section,
+                month=month,
             )
         )
     return items

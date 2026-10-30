@@ -27,7 +27,9 @@ from bot.schemas import (
     ReleasePrep,
     Review,
     UiDesignSummary,
+    WeeklyReview,
 )
+from bot.schemas.education import QUIZ_MAX, QUIZ_MIN
 
 PROMPTS_DIR = Path(__file__).resolve().parent
 
@@ -84,10 +86,12 @@ def _history(entries: Sequence[HistoryEntry]) -> str:
     return "\n".join(lines)
 
 
-def _profile(persona: Persona) -> str:
+def _profile(persona: Persona, *, hiring_guide: bool = True) -> str:
     parts = []
     if persona.profile.strip():
         parts.append(f"## 인격과 역량\n\n{persona.profile.strip()}")
+    if not hiring_guide:
+        return "\n" + "\n\n".join(parts) + "\n\n" if parts else "\n"
     hiring = HIRING_GUIDE
     if persona.rejected:
         hiring += "\n\nZero가 거절한 제안 (새 근거 없이 다시 제안하지 않는다):\n" + "\n".join(
@@ -168,11 +172,11 @@ def with_format_error(prompt: str, error: str) -> str:
 # 흐름의 단계: 기획, 화면 디자인, 설계, 진단, 구현, 수정, 팀장 확인, 리뷰, 출시 준비, 문서 반영
 
 
-def _persona(persona: Persona) -> dict[str, str]:
+def _persona(persona: Persona, *, hiring_guide: bool = True) -> dict[str, str]:
     return {
         "persona": persona.name,
         "perspective": persona.perspective,
-        "profile": _profile(persona),
+        "profile": _profile(persona, hiring_guide=hiring_guide),
     }
 
 
@@ -536,12 +540,25 @@ def concept_note_prompt(
     month: str,
 ) -> str:
     """교육팀장의 개념 노트 본문 (ADR-009)."""
+    # 교육 출력 스키마에는 hiring_proposal이 없다
     return _template("concept_note").substitute(
-        _persona(persona),
+        _persona(persona, hiring_guide=False),
         day=day,
         label=label.strip(),
         item=item.strip(),
         section=section.strip() or "-",
         month=month.strip(),
         schema=_schema(ConceptNote),
+    )
+
+
+def weekly_quiz_prompt(persona: Persona, *, facts: str, notes: list[str]) -> str:
+    """교육팀장의 주간 문제와 한마디 (ADR-009). notes는 이번 주 개념 노트 경로."""
+    return _template("weekly_quiz").substitute(
+        _persona(persona, hiring_guide=False),
+        facts=facts.strip(),
+        notes="\n".join(f"- `{note}.md`" for note in notes),
+        count_min=QUIZ_MIN,
+        count_max=QUIZ_MAX,
+        schema=_schema(WeeklyReview),
     )

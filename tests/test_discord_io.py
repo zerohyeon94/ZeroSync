@@ -449,7 +449,7 @@ def test_intents_include_message_content(bot):
     names = {command.name for command in bot.tree.get_commands(guild=bot.guild_ref)}
     assert names == {
         "task", "release", "debate", "idea", "approve", "revise", "skip", "fix",
-        "resume", "stop", "hire", "status", "ping", "daily",
+        "resume", "stop", "hire", "status", "ping", "daily", "weekly",
     }  # fmt: skip
     project = project_contexts(bot.config)["gagaessi"]
     assert project.github.repo == "owner/GagaeSsi"
@@ -524,7 +524,7 @@ def test_due_reports_run_once_and_go_to_report_channel(bot):
     assert sent[0][0].startswith("**아침 보고**") and sent[1][0].startswith("**주간 보고**")
 
 
-def test_education_daily_runs_on_its_schedule_once(bot, tmp_path):
+def test_education_daily_and_weekly_run_on_their_schedules_once(bot, tmp_path):
     from bot.clock import FixedClock
     from bot.config import EducationConfig
     from bot.store import Repository, connect
@@ -537,6 +537,9 @@ def test_education_daily_runs_on_its_schedule_once(bot, tmp_path):
     class Desk:
         async def run_daily(self):
             runs.append("daily")
+
+        async def run_weekly(self):
+            runs.append("weekly")
 
     bot.education = Desk()
 
@@ -560,13 +563,43 @@ def test_education_daily_runs_on_its_schedule_once(bot, tmp_path):
 
     first, again = run(main())
     assert "education_daily" in first and "education_daily" not in again
-    assert runs == ["daily"]
+    # 주간(일요일 20:00)은 지난 일요일 몫을 한 번 따라잡는다
+    assert "education_weekly" in first and "education_weekly" not in again
+    assert sorted(runs) == ["daily", "weekly"]
 
 
-def test_daily_command_is_zero_only_and_needs_education(bot):
+@pytest.mark.parametrize("command", ["run_daily", "run_weekly"])
+def test_education_commands_are_zero_only_and_need_education(bot, command):
     other = interaction(user_id=7)
-    run(bot.run_daily(other))
+    run(getattr(bot, command)(other))
     assert "Zero만" in other.response.sent[0][0]
     zero = interaction()
-    run(bot.run_daily(zero))
+    run(getattr(bot, command)(zero))
     assert "교육 설정" in zero.response.sent[0][0]
+
+
+def test_quiz_button_round_trips_custom_id_and_only_zero_answers(bot):
+    from bot.discord_io.quiz import QUIZ_ID, QuizButton, quiz_view
+
+    view = quiz_view(12, 3)
+    ids = [item.item.custom_id for item in view.children]
+    assert ids == ["quiz:12:3:A", "quiz:12:3:B", "quiz:12:3:C", "quiz:12:3:D"]
+    match = QUIZ_ID.fullmatch(ids[1])
+    button = run(QuizButton.from_custom_id(None, None, match))
+    assert (button.quiz_id, button.number, button.choice) == (12, 3, "B")
+
+    answers = []
+
+    class Desk:
+        async def answer(self, quiz_id, number, choice):
+            answers.append((quiz_id, number, choice))
+            return "정답이다 (B)."
+
+    bot.education = Desk()
+    other = interaction(user_id=7)
+    run(bot.answer_quiz(other, 12, 3, "B"))
+    zero = interaction()
+    run(bot.answer_quiz(zero, 12, 3, "B"))
+    assert "Zero의 문제" in other.response.sent[0][0]
+    assert zero.response.sent == [("정답이다 (B).", {"ephemeral": True})]
+    assert answers == [(12, 3, "B")]

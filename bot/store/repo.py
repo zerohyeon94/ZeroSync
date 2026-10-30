@@ -576,6 +576,54 @@ class Repository:
         rows = await self._fetchall(sql + " ORDER BY id", params)
         return [{k: row[k] for k in row.keys()} for row in rows]
 
+    # 교육 주간 문제 (ADR-009)
+
+    async def add_quiz(self, week: str, payload: str) -> int:
+        """주(2026-W45)마다 하나. 이미 있으면 IntegrityError."""
+        async with self._transaction():
+            cursor = await self._conn.execute(
+                "INSERT INTO quizzes (week, payload, created_at) VALUES (?, ?, ?)",
+                (week, payload, self._now()),
+            )
+        assert cursor.lastrowid is not None
+        return cursor.lastrowid
+
+    async def get_quiz(self, quiz_id: int) -> tuple[str, str] | None:
+        """(week, payload)."""
+        row = await self._fetchone("SELECT week, payload FROM quizzes WHERE id = ?", (quiz_id,))
+        return None if row is None else (str(row["week"]), str(row["payload"]))
+
+    async def quiz_for_week(self, week: str) -> int | None:
+        row = await self._fetchone("SELECT id FROM quizzes WHERE week = ?", (week,))
+        return None if row is None else int(row["id"])
+
+    async def record_quiz_answer(
+        self, quiz_id: int, number: int, choice: str, correct: bool
+    ) -> str:
+        """처음 고른 답만 남긴다. 기록된 답(이번 것이거나 이전 것)을 돌려준다."""
+        async with self._transaction():
+            await self._conn.execute(
+                "INSERT OR IGNORE INTO quiz_answers "
+                "(quiz_id, number, choice, correct, answered_at) VALUES (?, ?, ?, ?, ?)",
+                (quiz_id, number, choice, int(correct), self._now()),
+            )
+        row = await self._fetchone(
+            "SELECT choice FROM quiz_answers WHERE quiz_id = ? AND number = ?",
+            (quiz_id, number),
+        )
+        assert row is not None
+        return str(row["choice"])
+
+    async def quiz_score(self, quiz_id: int) -> tuple[int, int]:
+        """(답한 문제 수, 맞힌 문제 수)."""
+        row = await self._fetchone(
+            "SELECT COUNT(*) AS n, COALESCE(SUM(correct), 0) AS ok "
+            "FROM quiz_answers WHERE quiz_id = ?",
+            (quiz_id,),
+        )
+        assert row is not None
+        return int(row["n"]), int(row["ok"])
+
     # bot_state, schedule_runs
 
     async def get_state(self, key: str) -> str | None:

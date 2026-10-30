@@ -30,6 +30,7 @@ class Stage(StrEnum):
     RELEASE_PREP = "release_prep"
     DOC_SYNC = "doc_sync"
     CONCEPT_NOTE = "concept_note"  # 교육 Daily 개념 노트 (ADR-009)
+    WEEKLY_QUIZ = "weekly_quiz"  # 교육 주간 문제와 한마디
 
 
 class RunStatus(StrEnum):

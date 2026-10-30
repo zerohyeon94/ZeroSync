@@ -169,10 +169,11 @@ class EducationConfig(_Model):
     vault: ExpandedPath
     agent: str = "eta"
     schedule: str = "30 7 * * *"  # 매일 07:30, 아침 보고(08:00) 전
+    weekly: str = "0 20 * * 0"  # 주간 학습 보고와 주간 문제. 일요일 20:00
     # #교육 채널. 없으면 #대표실(없으면 운영 채널)에 알린다
     channel_id: DiscordId | None = None
 
-    @field_validator("schedule")
+    @field_validator("schedule", "weekly")
     @classmethod
     def _cron(cls, value: str) -> str:
         try:

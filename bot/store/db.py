@@ -144,7 +144,25 @@ CREATE TABLE ideas (
 );
 """
 
-MIGRATIONS: tuple[str, ...] = (_V1, _V2, _V3, _V4, _V5, _V6)
+# v7: 교육 주간 문제와 Zero의 답 (ADR-009). 처음 고른 답만 기록한다
+_V7 = """
+CREATE TABLE quizzes (
+  id               INTEGER PRIMARY KEY,
+  week             TEXT NOT NULL UNIQUE,
+  payload          TEXT NOT NULL,
+  created_at       TEXT NOT NULL
+);
+CREATE TABLE quiz_answers (
+  quiz_id          INTEGER NOT NULL REFERENCES quizzes(id),
+  number           INTEGER NOT NULL,
+  choice           TEXT NOT NULL,
+  correct          INTEGER NOT NULL,
+  answered_at      TEXT NOT NULL,
+  PRIMARY KEY (quiz_id, number)
+);
+"""
+
+MIGRATIONS: tuple[str, ...] = (_V1, _V2, _V3, _V4, _V5, _V6, _V7)
 SCHEMA_VERSION = len(MIGRATIONS)
 
 

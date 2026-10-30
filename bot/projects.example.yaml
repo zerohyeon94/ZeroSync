@@ -31,6 +31,7 @@ education:
   vault: ~/Library/Mobile Documents/iCloud~md~obsidian/Documents/my-vault
   agent: eta                # 교육팀장 (org.yaml의 에이전트)
   schedule: "30 7 * * *"    # 매일 07:30
+  weekly: "0 20 * * 0"      # 주간 학습 보고와 주간 문제, 일요일 20:00
   channel_id: "123456789012345684"   # #교육. 생략하면 #대표실에 알린다
 
 # 생략하면 기본값을 쓴다
@@ -39,7 +40,7 @@ cli:
   codex: codex
   # 단계별 모델. 적지 않은 단계는 각 CLI의 기본 모델을 쓴다
   # Claude 단계: opinion, debate, plan, ui_design, design, implement, fix, review,
-  #   diagnose, lead_check, release_prep, doc_sync, concept_note
+  #   diagnose, lead_check, release_prep, doc_sync, concept_note, weekly_quiz
   claude_models:
     opinion: sonnet
     debate: sonnet

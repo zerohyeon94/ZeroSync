@@ -27,7 +27,16 @@ from bot.education.daily import (
     update_queue,
 )
 from bot.education.note import check_note, parse_questions
-from bot.schemas import ConceptNote
+from bot.education.weekly import (
+    QuizScore,
+    answer_text,
+    check_review,
+    render_question,
+    render_weekly,
+    week_facts,
+    week_key,
+)
+from bot.schemas import ConceptNote, QuizQuestion, WeeklyReview
 from bot.workflow.education import EducationDesk
 
 GOALS = """\
@@ -335,17 +344,20 @@ class FakeAnswer:
 
 
 class FakeEngine:
-    def __init__(self, note=None):
+    def __init__(self, note=None, review=None):
         self.note = note
+        self.review = review
         self.calls = []
 
     async def ask_outside_task(self, scope, agent, stage, build_prompt, *, model, cwd, verify):
         prompt = build_prompt(_persona())
         self.calls.append((scope, agent, stage.value, prompt))
-        if self.note is None:
+        answer = self.review if stage.value == "weekly_quiz" else self.note
+        if answer is None:
             return FakeAnswer(None, "형식 오류")
-        assert await verify(self.note) == []
-        return FakeAnswer(self.note)
+        assert isinstance(answer, model)
+        assert await verify(answer) == []
+        return FakeAnswer(answer)
 
 
 class FakeVault:
@@ -365,7 +377,7 @@ def _persona():
 
 
 def make_vault(tmp_path):
-    (tmp_path / "Schedule").mkdir()
+    (tmp_path / "Schedule").mkdir(parents=True)
     (tmp_path / "Schedule" / "월별 목표 (2026-11 ~ 2027-10).md").write_text(GOALS, "utf-8")
     (tmp_path / "Schedule" / "학습 대기열.md").write_text(QUEUE, "utf-8")
     return tmp_path
@@ -485,3 +497,170 @@ def test_daily_includes_review_from_older_note(tmp_path):
     assert "3일 전 개념" in daily
     early = (root / "Daily/2026-11/2026-11-03.md").read_text("utf-8")
     assert "## 복습" not in early
+
+
+# 주간 보고와 주간 문제
+
+
+def _question(answer="B", prompt="엣지와 중앙의 역할은?"):
+    return QuizQuestion(
+        prompt=prompt,
+        options=["장비가 모은다", "장비가 판단한다", "웹이 판단한다", "아무도 안 한다"],
+        answer=answer,
+        explanation="장비가 현장에서 판단한다. (엣지-중앙 서버 구조)",
+    )
+
+
+REVIEW = WeeklyReview(
+    comment=["gRPC는 이어 하는 중이다. 다음 주 월요일에 마무리한다."],
+    questions=[_question(prompt=f"{n}번째 질문입니다") for n in range(1, 6)],
+)
+
+
+def test_week_facts_counts_this_week_only():
+    def d(day, target, done):
+        return (date(2026, 11, day), daily_text(f"Learning/개념/{target}", target, done))
+
+    dailies = [
+        d(1, "지난주", True),  # 일요일: 지난주
+        d(2, "엣지", False),
+        d(3, "엣지", True),
+        d(4, "소리", True),
+        d(5, "gRPC", False),
+    ]
+    queue = parse_queue(QUEUE.replace("- [ ] 엣지-중앙", "- [x] 엣지-중앙"))
+    facts = week_facts(date(2026, 11, 8), dailies, queue)
+    assert facts.start == date(2026, 11, 2) and facts.daily_days == 4
+    assert [(c.label, c.done) for c in facts.concepts] == [
+        ("엣지", True),
+        ("소리", True),
+        ("gRPC", False),
+    ]
+    assert (facts.done, facts.month_done, facts.month_total) == (2, 1, 3)
+    assert week_key(date(2026, 11, 8)) == "2026-W45"
+
+
+def test_render_weekly_lists_facts_score_and_comment():
+    facts = week_facts(
+        date(2026, 11, 8),
+        [(date(2026, 11, 2), daily_text("Learning/개념/a 엣지", "엣지", True))],
+        parse_queue(QUEUE),
+    )
+    text = render_weekly(facts, QuizScore(6, 5, 4), ["다음 주에 이어 간다"], "Eta · 교육팀장")
+    assert text.splitlines()[:4] == [
+        "**주간 학습 보고** (11-02 ~ 11-08)",
+        "- Daily: 7일 중 1일 · 끝낸 개념 1개",
+        "- 2026-11 대기열: 3개 중 0개 완료",
+        "- 지난주 문제: 6문제 중 5개 풂, 4개 맞힘",
+    ]
+    assert "- [x] 엣지" in text and "**Eta · 교육팀장의 한마디**\n- 다음 주에 이어 간다" in text
+    unanswered = render_weekly(facts, QuizScore(6, 0, 0), [], "Eta")
+    assert "6문제, 풀지 않음" in unanswered and "한마디" not in unanswered
+
+
+def test_quiz_question_and_answer_text():
+    question = _question()
+    assert render_question(question, 2, 6).splitlines() == [
+        "**주간 문제 2/6**",
+        "엣지와 중앙의 역할은?",
+        "",
+        "A. 장비가 모은다",
+        "B. 장비가 판단한다",
+        "C. 웹이 판단한다",
+        "D. 아무도 안 한다",
+    ]
+    assert answer_text(question, "B", "B").startswith("정답이다 (B).")
+    assert answer_text(question, "A", "A").startswith("오답이다. 고른 답 A, 정답 B.")
+    assert answer_text(question, "B", "A").startswith("이미 A를 골랐다 (정답 B).")
+
+
+def test_check_review_reports_marked_or_repeated_options_and_private_folder():
+    bad = WeeklyReview(
+        comment=["회사/ 폴더 참고"],
+        questions=[
+            QuizQuestion(
+                prompt="질문입니다",
+                options=["A. 하나", "둘", "둘", "넷"],
+                answer="A",
+                explanation="해설",
+            ),
+            *REVIEW.questions[1:],
+        ],
+    )
+    problems = check_review(bad)
+    assert any("겹친다" in p for p in problems)
+    assert any("머리표" in p for p in problems)
+    assert any("회사 폴더" in p for p in problems)
+    assert check_review(REVIEW) == []
+
+
+def run_weekly(root, day, engine, repo_path, posted):
+    from bot.store import Repository, connect
+
+    notes = []
+
+    async def notify(text, mention):
+        notes.append((text, mention))
+
+    async def post_quiz(quiz_id, questions):
+        posted.append((quiz_id, len(questions)))
+
+    async def main():
+        conn = await connect(repo_path)
+        try:
+            clock = FixedClock(datetime(day.year, day.month, day.day, 20, 0).astimezone())
+            repo = Repository(conn, clock)
+            desk = EducationDesk(
+                engine, None, root, "eta", "Eta", notify, clock, repo=repo, post_quiz=post_quiz
+            )
+            text = await desk.run_weekly()
+            answers = []
+            for quiz_id, _ in posted[-1:]:
+                answers.append(await desk.answer(quiz_id, 1, "B"))
+                answers.append(await desk.answer(quiz_id, 1, "A"))
+                answers.append(await desk.answer(quiz_id, 2, "C"))
+                answers.append(await desk.answer(quiz_id, 9, "C"))
+            return text, answers
+        finally:
+            await conn.close()
+
+    return asyncio.run(main()), notes
+
+
+def test_weekly_asks_eta_posts_quiz_and_scores_next_week(tmp_path):
+    root = make_vault(tmp_path / "vault")
+    run_desk(root, date(2026, 11, 2), FakeEngine(NOTE))
+    engine, posted, db = FakeEngine(review=REVIEW), [], tmp_path / "z.db"
+    (text, answers), notes = run_weekly(root, date(2026, 11, 8), engine, db, posted)
+
+    scope, agent, stage, prompt = engine.calls[0]
+    assert (scope, stage) == ("education", "weekly_quiz")
+    assert "`Learning/개념/2026-11-02 엣지-중앙 서버 구조.md`" in prompt
+    assert "끝낸 개념 0개" in prompt
+    assert posted == [(1, 5)]
+    assert notes == [(text, False)] and "Eta의 한마디" in text
+    assert answers[0].startswith("정답이다 (B).")
+    assert answers[0].endswith("5문제 중 1개 풂, 1개 맞힘")
+    assert answers[1].startswith("이미 B를 골랐다")
+    assert answers[2].startswith("오답이다") and answers[2].endswith("2개 풂, 1개 맞힘")
+    assert answers[3] == "없는 문제다."
+
+    again_posted = []
+    (again, _), _ = run_weekly(root, date(2026, 11, 8), FakeEngine(review=REVIEW), db, again_posted)
+    assert again_posted == [] and again.endswith("이번 주 문제는 이미 냈다.")
+
+    (next_week, _), _ = run_weekly(root, date(2026, 11, 15), FakeEngine(review=REVIEW), db, [])
+    assert "지난주 문제: 5문제 중 2개 풂, 1개 맞힘" in next_week
+
+
+def test_weekly_without_concepts_skips_eta_and_failure_mentions(tmp_path):
+    root = make_vault(tmp_path / "vault")
+    engine = FakeEngine(review=REVIEW)
+    (text, _), notes = run_weekly(root, date(2026, 11, 8), engine, tmp_path / "a.db", [])
+    assert engine.calls == [] and "Daily: 7일 중 0일" in text and notes[0][1] is False
+
+    run_desk(root, date(2026, 11, 2), FakeEngine(NOTE))
+    posted = []
+    (text, _), notes = run_weekly(root, date(2026, 11, 8), FakeEngine(), tmp_path / "b.db", posted)
+    assert posted == [] and text.endswith("Eta가 주간 문제를 만들지 못했다.")
+    assert notes[0][1] is True

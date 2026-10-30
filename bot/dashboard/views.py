@@ -48,6 +48,7 @@ STAGE_LABELS = {
     "release_prep": "출시 준비",
     "doc_sync": "문서 반영",
     "concept_note": "개념 노트",
+    "weekly_quiz": "주간 문제",
 }
 KIND_LABELS = {
     "message": "메시지",

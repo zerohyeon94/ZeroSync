@@ -19,6 +19,7 @@ from bot.agents.base import AgentRunner, EngineName
 from bot.clock import Clock, SystemClock, from_iso, to_iso
 from bot.config import Config
 from bot.discord_io.chat import DiscordChat
+from bot.discord_io.quiz import QuizButton, quiz_view
 from bot.discord_io.rules import (
     WEBHOOK_NAME,
     IncomingMessage,
@@ -27,16 +28,19 @@ from bot.discord_io.rules import (
     classify,
     command_error,
 )
+from bot.education.weekly import render_question
 from bot.github import GitHubClient, VaultGit
 from bot.render.status import render_ping, render_status
 from bot.reports import Report, morning_report, weekly_report
 from bot.scheduler import (
     BUILTIN_SCHEDULES,
     EDUCATION_DAILY,
+    EDUCATION_WEEKLY,
     MORNING_REPORT,
     is_due,
     parse_cron,
 )
+from bot.schemas import QuizQuestion
 from bot.store import Repository
 from bot.workflow.education import EducationDesk
 from bot.workflow.engine import PAUSE_KEY, Engine, ProjectContext
@@ -143,6 +147,8 @@ class ZeroSyncBot(discord.Client):
                 config.org.display(config.education.agent),
                 self._education_notify,
                 self.clock,
+                repo=repo,
+                post_quiz=self._post_quiz,
             )
         self._webhooks: dict[int, discord.Webhook] = {}
         self._background: set[asyncio.Task[None]] = set()
@@ -153,6 +159,8 @@ class ZeroSyncBot(discord.Client):
     # 시작
 
     async def setup_hook(self) -> None:
+        # 주간 문제 버튼은 재시작 뒤에도 눌려야 한다
+        self.add_dynamic_items(QuizButton)
         await self.tree.sync(guild=self.guild_ref)
 
     async def on_ready(self) -> None:
@@ -236,11 +244,16 @@ class ZeroSyncBot(discord.Client):
             ran.append(job)
         education = self.config.education
         if self.education is not None and education is not None:
-            previous = from_iso(last[EDUCATION_DAILY]) if EDUCATION_DAILY in last else None
-            if is_due(parse_cron(education.schedule), local, previous):
-                await self.repo.record_schedule_run(EDUCATION_DAILY, to_iso(now))
-                self.spawn(self.education.run_daily(), "교육 Daily")
-                ran.append(EDUCATION_DAILY)
+            jobs = (
+                (EDUCATION_DAILY, education.schedule, self.education.run_daily, "교육 Daily"),
+                (EDUCATION_WEEKLY, education.weekly, self.education.run_weekly, "교육 주간 보고"),
+            )
+            for job, cron, run, name in jobs:
+                previous = from_iso(last[job]) if job in last else None
+                if is_due(parse_cron(cron), local, previous):
+                    await self.repo.record_schedule_run(job, to_iso(now))
+                    self.spawn(run(), name)
+                    ran.append(job)
         # 파이프라인 일정 (정기 테스트 등): 제품마다 따로 (SPEC 6.6, ADR-007)
         for key, pipeline in self.engine.pipelines.items():
             if pipeline.schedule is None or "schedule" not in pipeline.triggers:
@@ -268,27 +281,66 @@ class ZeroSyncBot(discord.Client):
         education = self.config.education
         assert education is not None
         text = f"**[{self.config.org.display(education.agent)}]**\n{text}"
+        await self.chat.send(await self._education_channel(), text, mention=mention)
+
+    async def _education_channel(self) -> Any:
+        education = self.config.education
+        assert education is not None
         if education.channel_id is None:
-            await self.chat.report(text, mention=mention)
-            return
+            return await self.chat.report_target()
         channel_id = int(education.channel_id)
-        channel = self.get_channel(channel_id) or await self.fetch_channel(channel_id)
-        await self.chat.send(channel, text, mention=mention)
+        return self.get_channel(channel_id) or await self.fetch_channel(channel_id)
+
+    async def _post_quiz(self, quiz_id: int, questions: list[QuizQuestion]) -> None:
+        """주간 문제를 한 문제씩 A~D 버튼과 함께 올린다."""
+        channel = await self._education_channel()
+        for number, question in enumerate(questions, start=1):
+            await channel.send(
+                render_question(question, number, len(questions)),
+                view=quiz_view(quiz_id, number),
+                allowed_mentions=discord.AllowedMentions.none(),
+                silent=True,
+            )
+
+    async def answer_quiz(
+        self, interaction: discord.Interaction, quiz_id: int, number: int, choice: str
+    ) -> None:
+        """주간 문제 버튼. Zero만 답할 수 있고, 결과는 Zero에게만 보인다."""
+        if interaction.user.id != self.zero_user_id:
+            await interaction.response.send_message("Zero의 문제다.", ephemeral=True)
+            return
+        if self.education is None:
+            await interaction.response.send_message("교육 설정이 없다.", ephemeral=True)
+            return
+        text = await self.education.answer(quiz_id, number, choice)
+        await interaction.response.send_message(text, ephemeral=True)
 
     async def run_daily(self, interaction: discord.Interaction) -> None:
         """오늘 Daily를 지금 만든다 (/daily). 이미 있으면 만들지 않는다."""
+        if await self._education_guard(interaction):
+            assert self.education is not None
+            await interaction.response.send_message("오늘 Daily를 만든다.", ephemeral=True)
+            self.spawn(self.education.run_daily(), "교육 Daily")
+
+    async def run_weekly(self, interaction: discord.Interaction) -> None:
+        """이번 주 학습 보고와 주간 문제를 지금 만든다 (/weekly). 문제는 주마다 한 번."""
+        if await self._education_guard(interaction):
+            assert self.education is not None
+            await interaction.response.send_message("주간 학습 보고를 만든다.", ephemeral=True)
+            self.spawn(self.education.run_weekly(), "교육 주간 보고")
+
+    async def _education_guard(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.zero_user_id:
             await interaction.response.send_message(
                 "이 봇의 명령은 Zero만 쓸 수 있다.", ephemeral=True
             )
-            return
+            return False
         if self.education is None:
             await interaction.response.send_message(
                 "교육 설정(projects.yaml의 education)이 없다.", ephemeral=True
             )
-            return
-        await interaction.response.send_message("오늘 Daily를 만든다.", ephemeral=True)
-        self.spawn(self.education.run_daily(), "교육 Daily")
+            return False
+        return True
 
     async def _report_channel(self) -> Any:
         assert self.report_channel_id is not None
@@ -643,6 +695,12 @@ def _register_commands(bot: ZeroSyncBot) -> None:
     @tree.command(name="daily", description="오늘 Daily와 개념 노트를 지금 만든다", guild=guild)
     async def daily(interaction: discord.Interaction) -> None:
         await bot.run_daily(interaction)
+
+    @tree.command(
+        name="weekly", description="이번 주 학습 보고와 주간 문제를 지금 만든다", guild=guild
+    )
+    async def weekly(interaction: discord.Interaction) -> None:
+        await bot.run_weekly(interaction)
 
     @tree.command(name="ping", description="봇 생존과 실행 중인 CLI 수", guild=guild)
     async def ping(interaction: discord.Interaction) -> None:
